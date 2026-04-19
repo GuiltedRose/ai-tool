@@ -433,64 +433,9 @@ def load_and_split_data(data_file=None, train_ratio=0.75, val_ratio=0.15, test_r
 
 WEIGHTS_FILE = "weights.npz"
 
-# Load data with 75/15/10 split
-# Automatically attempts to load from biosppy package first
-# Falls back to MNIST if biosppy data unavailable
+WEIGHTS_FILE = "weights.npz"
 
-(x_train, y_train), (x_val, y_val), (x_test, y_test), n_classes = load_and_split_data(
-    apply_preprocessing=True
-)
-
-network = [
-        # Flatten the input: (n_channels, n_timepoints, 1) -> (n_channels * n_timepoints, 1)
-        Reshape(
-            (x_train[0].shape[0], x_train[0].shape[1], x_train[0].shape[2]),
-            (x_train[0].shape[0] * x_train[0].shape[1] * x_train[0].shape[2], 1)
-        ),
-        Dense(x_train[0].shape[0] * x_train[0].shape[1] * x_train[0].shape[2], 128),
-        Sigmoid(),
-        Dense(128, 64),
-        Sigmoid(),
-        Dense(64, n_classes),
-        Softmax()
-]
-
-# Loading Weights
-if os.path.exists(WEIGHTS_FILE):
-    try:
-        data = np.load(WEIGHTS_FILE)
-        dense_layers = [l for l in network if isinstance(l, Dense)]
-        for i, layer in enumerate(dense_layers):
-            if f'dense_weights_{i}' in data and f'dense_bias_{i}' in data:
-                weights = data[f'dense_weights_{i}']
-                bias = data[f'dense_bias_{i}']
-                # Only load if shapes match
-                if weights.shape == layer.weights.shape and bias.shape == layer.bias.shape:
-                    layer.weights = weights
-                    layer.bias = bias
-                else:
-                    print(f"Weight shape mismatch for dense layer {i}, skipping")
-        conv_layers = [l for l in network if isinstance(l, Convolution)]
-        for i, layer in enumerate(conv_layers):
-            if f'conv_kernels_{i}' in data and f'conv_biases_{i}' in data:
-                kernels = data[f'conv_kernels_{i}']
-                biases = data[f'conv_biases_{i}']
-                # Only load if shapes match
-                if kernels.shape == layer.kernels.shape and biases.shape == layer.biases.shape:
-                    layer.kernels = kernels
-                    layer.biases = biases
-                else:
-                    print(f"Weight shape mismatch for conv layer {i}, skipping")
-        print("Loaded compatible weights")
-    except Exception as e:
-        print(f"Could not load weights: {e}")
-        print("Starting with fresh weights")
-
-epochs = 500
-learning_rate = 0.0001
-start_time = time.time()
-
-def save_weights():
+def save_weights(network):
     """Save network weights to file."""
     dense_layers = [l for l in network if isinstance(l, Dense)]
     conv_layers = [l for l in network if isinstance(l, Convolution)]
@@ -537,13 +482,14 @@ def evaluate(x_set, y_set, network):
     
     return avg_loss, avg_acc
 
-def run_training_loop(num_runs=5, epochs_per_run=50):
+def run_training_loop(num_runs=32, epochs_per_run=2014, learning_rate=0.0001):
     """
     Run multiple training sessions, cycling through BNCI datasets.
     
     Args:
         num_runs: Number of training sessions to run
         epochs_per_run: Number of epochs per training session
+        learning_rate: Learning rate for training
     """
     print(f"\n{'='*80}")
     print(f"Starting BNCI Dataset Training Loop")
@@ -630,7 +576,7 @@ def run_training_loop(num_runs=5, epochs_per_run=50):
                     print(f"Epoch {epoch+1:3d}/{epochs_per_run} | Train: {train_loss:.4f}/{train_acc:.4f} | Val: {val_loss:.4f}/{val_acc:.4f}")
             
             # Save weights after this session
-            save_weights()
+            save_weights(network)
             print(f"✓ Session {run + 1} complete - weights saved")
             
         except Exception as e:
@@ -665,5 +611,5 @@ def cleanup_files():
 
 if __name__ == "__main__":
     # Run the training loop for all 32 BNCI datasets
-    run_training_loop(num_runs=32, epochs_per_run=2014)
+    run_training_loop(num_runs=32, epochs_per_run=2014, learning_rate=0.0001)
 
