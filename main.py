@@ -72,7 +72,167 @@ def load_bnci_dataset(dataset_index):
     
     base_url = f"https://bnci-horizon-2020.eu/database/data-sets/{url_suffix}/"
     
-    # Try to download and load the first available file from this dataset
+    def unpack_matlab_cell(data):
+        """Recursively unpack MATLAB object cells and scalar arrays."""
+        while isinstance(data, np.ndarray) and data.dtype == object and data.shape == (1, 1):
+            data = data[0, 0]
+        return data
+
+    def first_matching_field(field_names, candidates):
+        for candidate in candidates:
+            for field in field_names:
+                if field.lower() == candidate:
+                    return field
+        return None
+
+    def select_struct_fields(trial_data):
+        field_names = trial_data.dtype.names
+        print(f"  Structured fields: {field_names}")
+
+        all_fields = {}
+        sizes = {}
+        for field in field_names:
+            field_data = trial_data[field]
+            all_fields[field] = field_data
+            sizes[field] = field_data.size if hasattr(field_data, 'size') else 1
+            if hasattr(field_data, 'shape'):
+                print(f"    {field}: shape={field_data.shape}, dtype={field_data.dtype}")
+
+        x_field = first_matching_field(field_names, ['x', 'signal', 'signals', 'eeg', 'data'])
+        y_field = first_matching_field(field_names, ['y', 'label', 'labels', 'target', 'targets', 'y_true'])
+        trial_field = first_matching_field(field_names, ['trial', 'trials', 'events', 'event'])
+
+        if x_field is None:
+            excluded_x_fields = {'trial', 'trials', 'classes', 'classes_stim', 'channels', 'gender', 'age', 'alsfrs', 'onsetals', 'fs'}
+            x_candidates = [f for f in field_names if f.lower() not in excluded_x_fields]
+            x_field = max(x_candidates or field_names, key=lambda f: sizes[f])
+            print(f"  Inferred X field: {x_field}")
+        else:
+            print(f"  Selected X field: {x_field}")
+
+        if y_field is None:
+            excluded_y_fields = {'trial', 'trials', 'classes', 'classes_stim', 'channels', 'gender', 'age', 'alsfrs', 'onsetals', 'fs'}
+            remaining = [f for f in field_names if f != x_field and f.lower() not in excluded_y_fields]
+            if remaining:
+                target_size = all_fields[x_field].shape[0] if hasattr(all_fields[x_field], 'shape') else None
+                same_length = [
+                    f for f in remaining
+                    if hasattr(all_fields[f], 'shape') and all_fields[f].shape and all_fields[f].shape[0] == target_size
+                ]
+                y_field = min(same_length or remaining, key=lambda f: sizes[f])
+                print(f"  Inferred y field: {y_field}")
+        else:
+            print(f"  Selected y field: {y_field}")
+
+        x_raw = unpack_matlab_cell(all_fields[x_field]) if x_field else None
+        y_raw = unpack_matlab_cell(all_fields[y_field]) if y_field else None
+        trial_raw = unpack_matlab_cell(all_fields[trial_field]) if trial_field else None
+        return x_raw, y_raw, trial_raw
+
+    def epoch_continuous_signal(x_raw, y_raw, trial_raw):
+        """
+        Align BNCI continuous streams with trial-level labels.
+
+        Returns either:
+        - epochs shaped (trials, channels, timepoints), labels shaped (trials,)
+        - row samples shaped (samples, features), labels shaped (samples,)
+        - None if the block has no usable labels.
+        """
+        if x_raw is None or y_raw is None:
+            return None
+
+        x = np.asarray(x_raw)
+        y = np.asarray(y_raw).squeeze()
+
+        if y.size == 0:
+            print("  Skipping block with empty labels")
+            return None
+
+        y = y.reshape(-1)
+
+        if x.ndim == 1:
+            x = x.reshape(-1, 1)
+
+        if x.ndim >= 2 and x.shape[0] == len(y):
+            print(f"  Using sample-aligned block: X={x.shape}, y={y.shape}")
+            return x, y
+
+        if trial_raw is None:
+            print(f"  Skipping unaligned block: X={x.shape}, y={y.shape}, no trial markers")
+            return None
+
+        trial = np.asarray(trial_raw).squeeze().reshape(-1)
+        if trial.size == 0:
+            print(f"  Skipping unaligned block: X={x.shape}, y={y.shape}, empty trial markers")
+            return None
+
+        trial = trial.astype(np.int64)
+        trial = trial[trial > 0]
+        if trial.size == 0:
+            print(f"  Skipping block with no positive trial markers")
+            return None
+
+        starts = trial - 1 if np.min(trial) >= 1 else trial
+        n_trials = min(len(starts), len(y))
+        starts = starts[:n_trials]
+        y = y[:n_trials]
+
+        valid_starts = starts[(starts >= 0) & (starts < x.shape[0])]
+        if len(valid_starts) != len(starts):
+            keep = (starts >= 0) & (starts < x.shape[0])
+            starts = starts[keep]
+            y = y[keep]
+
+        if len(starts) == 0:
+            print("  Skipping block with no in-range trial starts")
+            return None
+
+        if len(starts) > 1:
+            epoch_len = int(np.median(np.diff(np.sort(starts))))
+        else:
+            epoch_len = x.shape[0] - starts[0]
+
+        epoch_len = max(1, min(epoch_len, x.shape[0] - int(np.max(starts))))
+        epochs = []
+        labels = []
+        for start, label in zip(starts, y):
+            stop = int(start) + epoch_len
+            if stop <= x.shape[0]:
+                epochs.append(x[int(start):stop].T)
+                labels.append(label)
+
+        if not epochs:
+            print("  Skipping block because no full epochs could be cut")
+            return None
+
+        epochs = np.asarray(epochs)
+        labels = np.asarray(labels)
+        print(f"  Epoched continuous block: X={epochs.shape}, y={labels.shape}, epoch_len={epoch_len}")
+        return epochs, labels
+
+    def concatenate_chunks(x_chunks, y_chunks):
+        if not x_chunks:
+            return None
+
+        dims = {x.ndim for x in x_chunks}
+        if len(dims) != 1:
+            print(f"  Mixed sample ranks found {dims}; flattening chunks before concatenation")
+            x_chunks = [x.reshape(x.shape[0], -1) for x in x_chunks]
+
+        if x_chunks[0].ndim == 3:
+            min_channels = min(x.shape[1] for x in x_chunks)
+            min_timepoints = min(x.shape[2] for x in x_chunks)
+            x_chunks = [x[:, :min_channels, :min_timepoints] for x in x_chunks]
+        elif x_chunks[0].ndim == 2:
+            min_features = min(x.shape[1] for x in x_chunks)
+            x_chunks = [x[:, :min_features] for x in x_chunks]
+
+        return np.concatenate(x_chunks, axis=0), np.concatenate(y_chunks, axis=0)
+
+    x_chunks = []
+    y_chunks = []
+
+    # Download and load every file configured for this dataset set.
     for filename in file_list:
         try:
             dataset_url = base_url + filename + ".mat"
@@ -86,106 +246,38 @@ def load_bnci_dataset(dataset_index):
                 available_keys = [k for k in data.keys() if not k.startswith('__')]
                 print(f"  Keys in file: {available_keys}")
                 
-                # BNCI datasets store everything under 'data' key
                 if 'data' in data:
                     raw_data = data['data']
                     print(f"  'data' type: {type(raw_data).__name__}, shape: {raw_data.shape}, dtype: {raw_data.dtype}")
-                    
-                    # Unpack from (1, 1) shaped array
-                    trial_data = raw_data[0, 0]
-                    print(f"  Unpacked shape: {trial_data.shape}, dtype: {trial_data.dtype}")
-                    
-                    # Check if it's a structured array
-                    if trial_data.dtype.names:
-                        field_names = trial_data.dtype.names
-                        print(f"  Structured fields: {field_names}")
-                        
-                        # Extract all fields and show shapes. BNCI files often
-                        # include metadata fields like trial/classes that should
-                        # not override the actual signal/label arrays.
-                        all_fields = {}
-                        sizes = {}
-                        
-                        for field in field_names:
-                            field_data = trial_data[field]
-                            all_fields[field] = field_data
-                            sizes[field] = field_data.size if hasattr(field_data, 'size') else 1
-                            if hasattr(field_data, 'shape'):
-                                print(f"    {field}: shape={field_data.shape}, dtype={field_data.dtype}")
 
-                        def first_matching_field(candidates):
-                            for candidate in candidates:
-                                for field in field_names:
-                                    if field.lower() == candidate:
-                                        return field
-                            return None
+                    for cell_index, cell in enumerate(raw_data.flat):
+                        trial_data = unpack_matlab_cell(cell)
+                        if not isinstance(trial_data, np.ndarray):
+                            continue
 
-                        x_field = first_matching_field(['x', 'signal', 'signals', 'eeg', 'data'])
-                        y_field = first_matching_field(['y', 'label', 'labels', 'target', 'targets', 'y_true'])
-                        x_data = all_fields[x_field] if x_field else None
-                        y_data = all_fields[y_field] if y_field else None
+                        print(f"  Cell {cell_index + 1}/{raw_data.size}: shape={trial_data.shape}, dtype={trial_data.dtype}")
 
-                        if x_field:
-                            print(f"  Selected X field: {x_field}")
-                        if y_field:
-                            print(f"  Selected y field: {y_field}")
-                        
-                        # If not found by name, use size heuristic
-                        if x_data is None or y_data is None:
-                            print(f"  Field sizes: {sizes}")
-                            
-                            if x_data is None and field_names:
-                                # Largest field is likely X
-                                excluded_x_fields = {'trial', 'classes', 'classes_stim', 'channels', 'gender', 'age', 'alsfrs', 'onsetals'}
-                                x_candidates = [f for f in field_names if f.lower() not in excluded_x_fields]
-                                x_field = max(x_candidates or field_names, key=lambda f: sizes[f])
-                                x_data = trial_data[x_field]
-                                print(f"  Inferred X field: {x_field}")
-                            
-                            if y_data is None and len(field_names) > 1:
-                                # Prefer a label-sized vector over metadata.
-                                excluded_y_fields = {'trial', 'classes', 'classes_stim', 'channels', 'gender', 'age', 'alsfrs', 'onsetals'}
-                                remaining = [f for f in field_names if f != x_field and f.lower() not in excluded_y_fields]
-                                if remaining:
-                                    target_size = all_fields[x_field].shape[0] if x_field and hasattr(all_fields[x_field], 'shape') else None
-                                    same_length = [
-                                        f for f in remaining
-                                        if hasattr(all_fields[f], 'shape') and all_fields[f].shape and all_fields[f].shape[0] == target_size
-                                    ]
-                                    y_field = min(same_length or remaining, key=lambda f: sizes[f])
-                                    y_data = trial_data[y_field]
-                                    print(f"  Inferred y field: {y_field}")
-                        
-                        # Extract raw data without forcing into standard format
-                        def unpack_matlab_cell(data):
-                            """Recursively unpack MATLAB cell arrays."""
-                            while isinstance(data, np.ndarray) and data.dtype == object and data.shape == (1, 1):
-                                data = data[0, 0]
-                            return data
-                        
-                        # Unpack the raw data
-                        x_raw = unpack_matlab_cell(x_data) if x_data is not None else None
-                        y_raw = unpack_matlab_cell(y_data) if y_data is not None else None
-                        
-                        print(f"  Unpacked X type: {type(x_raw)}, ", end="")
-                        if isinstance(x_raw, np.ndarray):
-                            print(f"shape: {x_raw.shape}, dtype: {x_raw.dtype}")
+                        if trial_data.dtype.names:
+                            x_raw, y_raw, trial_raw = select_struct_fields(trial_data)
+                            print(f"  Unpacked X type: {type(x_raw)}, ", end="")
+                            if isinstance(x_raw, np.ndarray):
+                                print(f"shape: {x_raw.shape}, dtype: {x_raw.dtype}")
+                            else:
+                                print(f"length: {len(x_raw) if hasattr(x_raw, '__len__') else 'N/A'}")
+
+                            print(f"  Unpacked y type: {type(y_raw)}, ", end="")
+                            if isinstance(y_raw, np.ndarray):
+                                print(f"shape: {y_raw.shape}, dtype: {y_raw.dtype}")
+                            else:
+                                print(f"value: {y_raw}")
+
+                            prepared = epoch_continuous_signal(x_raw, y_raw, trial_raw)
+                            if prepared is not None:
+                                x_prepared, y_prepared = prepared
+                                x_chunks.append(x_prepared)
+                                y_chunks.append(y_prepared)
                         else:
-                            print(f"length: {len(x_raw) if hasattr(x_raw, '__len__') else 'N/A'}")
-                        
-                        print(f"  Unpacked y type: {type(y_raw)}, ", end="")
-                        if isinstance(y_raw, np.ndarray):
-                            print(f"shape: {y_raw.shape}, dtype: {y_raw.dtype}")
-                        else:
-                            print(f"value: {y_raw}")
-                        
-                        # Return raw biological signal data as-is for proper handling
-                        print(f"✓ Successfully loaded {filename}.mat (raw biological data)")
-                        return x_raw, y_raw
-                    else:
-                        # Unstructured - return as is
-                        print(f"  Unstructured array: shape={trial_data.shape}")
-                        return trial_data, np.zeros(trial_data.shape[0] if len(trial_data.shape) > 0 else 1)
+                            print(f"  Skipping unstructured cell: shape={trial_data.shape}")
                 else:
                     print(f"  No 'data' key found, skipping")
 
@@ -198,8 +290,16 @@ def load_bnci_dataset(dataset_index):
             import traceback
             traceback.print_exc()
             continue
-    
-    print(f"Could not load any files from dataset {dataset_id}")
+
+    combined = concatenate_chunks(x_chunks, y_chunks)
+    if combined is not None:
+        x_all, y_all = combined
+        print(f"✓ Loaded all usable files for dataset {dataset_id}")
+        print(f"  Combined X shape: {x_all.shape}")
+        print(f"  Combined y shape: {y_all.shape}")
+        return x_all, y_all
+
+    print(f"Could not load any usable samples from dataset {dataset_id}")
     return None
 
 def load_biosppy_eeg_data(data_file=None, dataset_index=0, require_bnci=False):

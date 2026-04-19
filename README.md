@@ -66,3 +66,5 @@ python main.py
 The default training loop starts at BNCI dataset 1 and proceeds deterministically by session number. It does not silently substitute unrelated image data if a BCI dataset fails.
 
 By default, each BNCI dataset set runs one training epoch per sample in that set's training split, so the training samples in each 1/32 set are consumed once before the loop advances.
+
+Each BNCI dataset set downloads and merges every configured `.mat` file in that set's file list. Empty MATLAB cells or blocks without usable labels are skipped, while labeled continuous streams are cut into trial epochs when trial markers are available.

@@ -22,6 +22,8 @@ The training loop loads configured BNCI Horizon 2020 datasets in deterministic o
 
 For each dataset set, the default run uses one training epoch per sample in that set's training split. That means each 1/32 set is walked once before moving to the next set.
 
+Within each dataset set, every configured `.mat` file in that set's file list is downloaded and merged before training begins.
+
 The current code intentionally does not replace failed BCI loads with unrelated image data.
 
 ## 3. Local Data Format
