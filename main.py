@@ -382,15 +382,22 @@ network = [
 
 # Loading Weights
 if os.path.exists(WEIGHTS_FILE):
-    data = np.load(WEIGHTS_FILE)
-    dense_layers = [l for l in network if isinstance(l, Dense)]
-    for i, layer in enumerate(dense_layers):
-        layer.weights = data[f'dense_weights_{i}']
-        layer.bias = data[f'dense_bias_{i}']
-    conv_layers = [l for l in network if isinstance(l, Convolution)]
-    for i, layer in enumerate(conv_layers):
-        layer.kernels = data[f'conv_kernels_{i}']
-        layer.biases = data[f'conv_biases_{i}']
+    try:
+        data = np.load(WEIGHTS_FILE)
+        dense_layers = [l for l in network if isinstance(l, Dense)]
+        for i, layer in enumerate(dense_layers):
+            if f'dense_weights_{i}' in data and f'dense_bias_{i}' in data:
+                layer.weights = data[f'dense_weights_{i}']
+                layer.bias = data[f'dense_bias_{i}']
+        conv_layers = [l for l in network if isinstance(l, Convolution)]
+        for i, layer in enumerate(conv_layers):
+            if f'conv_kernels_{i}' in data and f'conv_biases_{i}' in data:
+                layer.kernels = data[f'conv_kernels_{i}']
+                layer.biases = data[f'conv_biases_{i}']
+        print("Loaded existing weights")
+    except Exception as e:
+        print(f"Could not load weights (network architecture changed): {e}")
+        print("Starting with fresh weights")
 
 epochs = 500
 learning_rate = 0.0001
