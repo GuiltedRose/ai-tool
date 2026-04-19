@@ -124,37 +124,47 @@ def load_bnci_dataset(dataset_index):
                     x = data['signal']
                     y = data['label'].flatten()
                 elif 'data' in data:
-                    # BNCI format: structured array with trial data
-                    trial_data = data['data']
-                    # trial_data is typically shape (1, n_trials) with structured elements
-                    if trial_data.dtype.names:  # Structured array
-                        # Extract 'X' and 'y' from structured array
-                        if 'X' in trial_data.dtype.names and 'y' in trial_data.dtype.names:
-                            x = trial_data['X'][0][0]  # Unpack from nested structure
-                            y = trial_data['y'][0][0].flatten()
+                    # Inspect the 'data' key structure
+                    raw_data = data['data']
+                    print(f"  'data' key type: {type(raw_data)}, shape: {raw_data.shape}, dtype: {raw_data.dtype}")
+                    
+                    # Try to extract from nested structure
+                    if raw_data.dtype.names:  # Structured array
+                        print(f"    Structured array fields: {raw_data.dtype.names}")
+                        field_names = raw_data.dtype.names
+                        
+                        # Look for data fields (case insensitive)
+                        x_field = next((f for f in field_names if f.lower() in ['x', 'signal', 'eeg']), None)
+                        y_field = next((f for f in field_names if f.lower() in ['y', 'label', 'labels', 'class', 'classes']), None)
+                        
+                        if x_field and y_field:
+                            x = raw_data[x_field][0][0] if raw_data[x_field].ndim > 1 else raw_data[x_field]
+                            y = raw_data[y_field][0][0] if raw_data[y_field].ndim > 1 else raw_data[y_field]
+                            y = y.flatten() if hasattr(y, 'flatten') else y
+                            print(f"    Extracted {x_field} and {y_field}")
                         else:
-                            print(f"  Structured array keys: {trial_data.dtype.names}")
+                            print(f"    No matching X/Y fields found")
+                            print(f"    First field values: {raw_data[field_names[0]][0] if len(field_names) > 0 else 'N/A'}")
                     else:
-                        # Unstructured array - assume first elements are X and y
-                        x = trial_data
-                        # Try to find labels
-                        if 'labels' in data:
-                            y = data['labels'].flatten()
-                        elif 'y' in data:
-                            y = data['y'].flatten()
+                        # Direct array
+                        print(f"    Direct array structure")
+                        x = raw_data
                 
                 if x is not None and y is not None:
                     print(f"✓ Successfully loaded {filename}.mat")
                     print(f"  Shape: X={x.shape}, Y={y.shape}, Classes={len(np.unique(y))}")
                     return x, y
                 else:
-                    print(f"  Could not extract X and y from available keys: {available_keys}")
+                    print(f"  Could not extract valid X and y data")
+
         
         except urllib.error.HTTPError as e:
             print(f"  File not found: {e.code}")
             continue
         except Exception as e:
             print(f"  Error loading {filename}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
     
     print(f"Could not load any files from dataset {dataset_id}")
