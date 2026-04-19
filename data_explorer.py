@@ -1,29 +1,21 @@
 """
 EEG Data Exploration and Preprocessing Utilities
-Designed for use with pyscppy datasets in BCI projects
+Designed for BNCI/local biometric datasets in BCI projects.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy import signal
-import biosppy
 
 def load_and_explore_dataset():
     """
-    Load pyscppy dataset and print comprehensive information.
+    Load the project's configured BCI dataset and print comprehensive information.
     """
     try:
-        import pyscppy
-    except ImportError:
-        print("Error: pyscppy not installed. Run: pip install pyscppy")
-        return None, None
-    
-    try:
-        data = pyscppy.load_dataset()
-        x = data['x']
-        y = data['y']
+        from main import load_biosppy_eeg_data
+        x, y = load_biosppy_eeg_data(dataset_index=0)
     except Exception as e:
-        print(f"Error loading pyscppy dataset: {e}")
+        print(f"Error loading BCI dataset: {e}")
         return None, None
     
     print("=" * 60)
@@ -61,6 +53,13 @@ def preprocess_eeg_with_filtering(x, y, lowcut=1.0, highcut=50.0, order=4, fs=25
     print(f"\nApplying bandpass filter ({lowcut}-{highcut} Hz, order={order})...")
     
     x_orig_shape = x.shape
+
+    if x.ndim == 2 and x.shape[1] < 32:
+        print(
+            "Skipping bandpass filter for 2D channel-feature data "
+            f"with shape {x.shape}; not enough timepoints per sample."
+        )
+        return x, y
     
     # Flatten to 2D if needed for filtering
     if x.ndim == 3:

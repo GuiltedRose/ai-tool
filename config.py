@@ -9,7 +9,7 @@ DATA_CONFIG = {
     'val_ratio': 0.15,        # Percentage of data for validation
     'test_ratio': 0.10,       # Percentage of data for testing
     'random_seed': 42,        # For reproducible splits
-    'use_pyscppy': True,      # Use pyscppy; False = MNIST fallback
+    'use_bnci': True,         # Use BNCI/local biometric data only
 }
 
 # Preprocessing Configuration
@@ -36,13 +36,14 @@ NETWORK_CONFIG = {
 
 # Training Configuration
 TRAINING_CONFIG = {
-    'epochs': 500,                  # Number of training epochs
+    'dataset_sets': 32,             # One set is 1/32 of the BNCI structure
+    'epochs_per_set': None,         # None = one epoch per training sample in each set
     'learning_rate': 0.0001,        # Learning rate for SGD
     'batch_size': 1,                # Batch size (1 = SGD)
-    'save_interval': 1,             # Save weights every N epochs
-    'log_interval': 10,             # Print logs every N epochs
-    'test_interval': 50,            # Evaluate on test set every N epochs
-    'early_stopping_patience': 50,  # Epochs to wait before stopping if no improvement
+    'save_interval': 1,             # Save weights every N dataset sets
+    'log_interval': 1,              # Print logs every N passes
+    'test_interval': 1,             # Evaluate on test set every N passes
+    'early_stopping_patience': 0,   # Full passes to wait before stopping if enabled
     'early_stopping_enabled': False,# Enable early stopping
 }
 

@@ -2,7 +2,6 @@ import os
 import numpy as np
 from scipy import signal
 from scipy.io import loadmat, savemat
-from tensorflow.keras.utils import to_categorical
 from layer import Layer
 from activation import Activate, Tanh, Sigmoid
 from dense import Dense
@@ -29,32 +28,7 @@ class Softmax(Layer):
         self.output = tmp / np.sum(tmp)
         return self.output
     def backward(self, output_gradient, learning_rate):
-       n = np.size(self.output)
-       tmp = np.tile(self.output, n)
-       return np.dot(tmp * (np.identity(n) - np.transpose(tmp)), output_gradient)
-
-def get_current_dataset_index():
-    """
-    Get and increment the current dataset index.
-    Cycles through 0-31 (32 total datasets from BNCI Horizon 2020).
-    """
-    counter_file = "current_dataset_index.txt"
-    
-    if os.path.exists(counter_file):
-        with open(counter_file, 'r') as f:
-            try:
-                current_index = int(f.read().strip())
-            except:
-                current_index = 0
-    else:
-        current_index = 0
-    
-    # Save the next index for next run
-    next_index = (current_index + 1) % 32
-    with open(counter_file, 'w') as f:
-        f.write(str(next_index))
-    
-    return current_index
+       return output_gradient
 
 # BNCI Horizon 2020 Dataset Configurations
 BNCI_DATASETS = [
@@ -126,38 +100,59 @@ def load_bnci_dataset(dataset_index):
                         field_names = trial_data.dtype.names
                         print(f"  Structured fields: {field_names}")
                         
-                        # Extract all fields and show shapes
-                        x_data = None
-                        y_data = None
+                        # Extract all fields and show shapes. BNCI files often
+                        # include metadata fields like trial/classes that should
+                        # not override the actual signal/label arrays.
+                        all_fields = {}
+                        sizes = {}
                         
                         for field in field_names:
                             field_data = trial_data[field]
+                            all_fields[field] = field_data
+                            sizes[field] = field_data.size if hasattr(field_data, 'size') else 1
                             if hasattr(field_data, 'shape'):
                                 print(f"    {field}: shape={field_data.shape}, dtype={field_data.dtype}")
-                            
-                            # Identify X (signals) and y (labels) by field name
-                            if field.lower() in ['x', 'signal', 'eeg', 'trial']:
-                                x_data = field_data
-                            elif field.lower() in ['y', 'label', 'labels', 'class', 'classes', 'y_true']:
-                                y_data = field_data
+
+                        def first_matching_field(candidates):
+                            for candidate in candidates:
+                                for field in field_names:
+                                    if field.lower() == candidate:
+                                        return field
+                            return None
+
+                        x_field = first_matching_field(['x', 'signal', 'signals', 'eeg', 'data'])
+                        y_field = first_matching_field(['y', 'label', 'labels', 'target', 'targets', 'y_true'])
+                        x_data = all_fields[x_field] if x_field else None
+                        y_data = all_fields[y_field] if y_field else None
+
+                        if x_field:
+                            print(f"  Selected X field: {x_field}")
+                        if y_field:
+                            print(f"  Selected y field: {y_field}")
                         
                         # If not found by name, use size heuristic
                         if x_data is None or y_data is None:
-                            all_fields = {f: trial_data[f] for f in field_names}
-                            sizes = {f: d.size if hasattr(d, 'size') else 1 for f, d in all_fields.items()}
                             print(f"  Field sizes: {sizes}")
                             
                             if x_data is None and field_names:
                                 # Largest field is likely X
-                                x_field = max((f for f in field_names), key=lambda f: sizes[f])
+                                excluded_x_fields = {'trial', 'classes', 'classes_stim', 'channels', 'gender', 'age', 'alsfrs', 'onsetals'}
+                                x_candidates = [f for f in field_names if f.lower() not in excluded_x_fields]
+                                x_field = max(x_candidates or field_names, key=lambda f: sizes[f])
                                 x_data = trial_data[x_field]
                                 print(f"  Inferred X field: {x_field}")
                             
                             if y_data is None and len(field_names) > 1:
-                                # Smallest field is likely y
-                                remaining = [f for f in field_names if f != (x_field if x_data is not None else None)]
+                                # Prefer a label-sized vector over metadata.
+                                excluded_y_fields = {'trial', 'classes', 'classes_stim', 'channels', 'gender', 'age', 'alsfrs', 'onsetals'}
+                                remaining = [f for f in field_names if f != x_field and f.lower() not in excluded_y_fields]
                                 if remaining:
-                                    y_field = min(remaining, key=lambda f: sizes[f])
+                                    target_size = all_fields[x_field].shape[0] if x_field and hasattr(all_fields[x_field], 'shape') else None
+                                    same_length = [
+                                        f for f in remaining
+                                        if hasattr(all_fields[f], 'shape') and all_fields[f].shape and all_fields[f].shape[0] == target_size
+                                    ]
+                                    y_field = min(same_length or remaining, key=lambda f: sizes[f])
                                     y_data = trial_data[y_field]
                                     print(f"  Inferred y field: {y_field}")
                         
@@ -207,32 +202,35 @@ def load_bnci_dataset(dataset_index):
     print(f"Could not load any files from dataset {dataset_id}")
     return None
 
-def load_biosppy_eeg_data(data_file=None):
+def load_biosppy_eeg_data(data_file=None, dataset_index=0, require_bnci=False):
     """
     Load EEG data from available sources, cycling through BNCI Horizon 2020 datasets.
     
     Attempts to (in order):
-    1. Cycle through BNCI Horizon 2020 datasets (13 implemented)
+    1. Load the requested BNCI Horizon 2020 dataset
     2. Load from local data file (.mat or .npz)
     3. Generate synthetic EEG data using biosppy utilities
-    4. Fall back to MNIST
     
     Args:
         data_file: Optional path to local data file (.mat or .npz). 
+        dataset_index: Zero-based BNCI dataset index to load when using BNCI.
+        require_bnci: If True, raise when the requested BNCI dataset cannot load.
     
     Returns:
         x: EEG signals (n_samples, n_channels, n_timepoints)
         y: Class labels (n_samples,)
     """
     
-    # Try to load from cycling BNCI Horizon 2020 datasets
-    current_dataset_idx = get_current_dataset_index()
-    bnci_data = load_bnci_dataset(current_dataset_idx)
+    # Try to load the requested BNCI Horizon 2020 dataset.
+    bnci_data = load_bnci_dataset(dataset_index)
     if bnci_data is not None:
         x, y = bnci_data
         print(f"Loaded BNCI Horizon 2020 data")
         print(f"X shape: {x.shape}, Y shape: {y.shape}")
         return x, y
+
+    if require_bnci:
+        raise FileNotFoundError(f"BNCI dataset {dataset_index + 1}/32 could not be loaded")
     
     # Try to load from local file first
     if data_file is not None and os.path.exists(data_file):
@@ -353,6 +351,13 @@ def apply_biosppy_preprocessing(x, sampling_rate=250):
     print(f"Applying biosppy preprocessing (fs={sampling_rate}Hz)...")
     
     x_processed = x.copy()
+
+    if x_processed.ndim == 2 and x_processed.shape[1] < 32:
+        print(
+            "Skipping bandpass preprocessing for 2D channel-feature data "
+            f"with shape {x_processed.shape}; not enough timepoints per sample."
+        )
+        return x_processed
     
     # If 2D, add channel dimension
     if x_processed.ndim == 2:
@@ -382,15 +387,43 @@ def apply_biosppy_preprocessing(x, sampling_rate=250):
 
 def encode_labels(y):
     """Map arbitrary class labels to stable zero-based one-hot vectors."""
-    y = np.array(y).flatten()
+    y = np.squeeze(np.array(y))
+    y = y.flatten()
     if y.size == 0:
         raise ValueError("No labels found in data")
 
-    unique_classes = np.unique(y)
+    labels = []
+    for label in y:
+        if isinstance(label, np.ndarray):
+            labels.append(tuple(np.squeeze(label).tolist()))
+        else:
+            labels.append(label)
+
+    unique_classes = np.array(sorted(set(labels), key=lambda value: str(value)), dtype=object)
     class_to_index = {label: idx for idx, label in enumerate(unique_classes)}
-    y_index = np.array([class_to_index[label] for label in y], dtype=np.int32)
+    y_index = np.array([class_to_index[label] for label in labels], dtype=np.int32)
     y_cat = np.eye(len(unique_classes), dtype=np.float32)[y_index]
     return y_cat.reshape(len(y_cat), len(unique_classes), 1), len(unique_classes)
+
+def normalize_biometric_data(x):
+    """
+    Z-score biometric signals without mixing unrelated channel statistics.
+    """
+    x = np.asarray(x, dtype=np.float32)
+
+    if x.ndim == 3:
+        # Epoch data: normalize each channel across samples and time.
+        mean = np.mean(x, axis=(0, 2), keepdims=True)
+        std = np.std(x, axis=(0, 2), keepdims=True) + 1e-8
+    elif x.ndim == 2:
+        # Feature/channel rows: normalize each feature/channel across samples.
+        mean = np.mean(x, axis=0, keepdims=True)
+        std = np.std(x, axis=0, keepdims=True) + 1e-8
+    else:
+        mean = np.mean(x, keepdims=True)
+        std = np.std(x, keepdims=True) + 1e-8
+
+    return (x - mean) / std
 
 def reshape_eeg_for_network(x):
     """
@@ -443,17 +476,9 @@ def preprocess_eeg_data(x, y):
     if x.shape[0] == 0:
         raise ValueError("No valid samples in data")
     
-    # Normalize data to [-1, 1] range
+    # Normalize biometric data while preserving channel-specific statistics.
     try:
-        if x.ndim >= 2:
-            # Normalize across all dimensions except samples
-            mean = np.mean(x)
-            std = np.std(x) + 1e-8
-        else:
-            mean = np.mean(x)
-            std = np.std(x) + 1e-8
-        
-        x = (x - mean) / std
+        x = normalize_biometric_data(x)
     except Exception as e:
         print(f"Warning: Normalization failed: {e}, skipping")
     
@@ -467,12 +492,11 @@ def preprocess_eeg_data(x, y):
     
     return x, y_cat, n_classes
 
-def load_and_split_data(data_file=None, train_ratio=0.75, val_ratio=0.15, test_ratio=0.1, apply_preprocessing=True):
+def load_and_split_data(data_file=None, train_ratio=0.75, val_ratio=0.15, test_ratio=0.1, apply_preprocessing=True, dataset_index=0, require_bnci=False):
     """
     Load EEG data and split into train/val/test sets.
     
-    Automatically attempts to load from biosppy package datasets.
-    Falls back to MNIST or local files if biosppy data unavailable.
+    Loads BCI/biometric data from BNCI or a local EEG file, then splits it.
     
     Args:
         data_file: Optional path to local EEG data file (.mat or .npz). 
@@ -481,33 +505,22 @@ def load_and_split_data(data_file=None, train_ratio=0.75, val_ratio=0.15, test_r
         val_ratio: Percentage for validation (0.15)
         test_ratio: Percentage for testing (0.10)
         apply_preprocessing: Whether to apply biosppy preprocessing
+        dataset_index: Zero-based BNCI dataset index to load.
+        require_bnci: If True, do not substitute local/synthetic data for BNCI.
     
     Returns:
         (x_train, y_train), (x_val, y_val), (x_test, y_test), n_classes
     """
-    # Try to load EEG data
-    try:
-        x, y = load_biosppy_eeg_data(data_file)
-        
-        # Apply biosppy preprocessing
-        if apply_preprocessing:
-            x = apply_biosppy_preprocessing(x, sampling_rate=250)
-        
-        # Preprocess
-        x, y, n_classes = preprocess_eeg_data(x, y)
-        
-        print(f"Successfully loaded EEG data with {n_classes} classes")
-        
-    except Exception as e:
-        print(f"Error loading EEG data: {e}")
-        print("Falling back to MNIST for testing...")
-        from keras.datasets import mnist
-        
-        (x_train_full, y_train_full), (x_test_full, y_test_full) = mnist.load_data()
-        x = np.concatenate([x_train_full, x_test_full]).astype("float32") / 255
-        y = np.concatenate([y_train_full, y_test_full])
-        x, y, n_classes = preprocess_eeg_data(x, y)
-        print("Loaded MNIST fallback data")
+    x, y = load_biosppy_eeg_data(data_file, dataset_index=dataset_index, require_bnci=require_bnci)
+
+    # Apply biosppy preprocessing
+    if apply_preprocessing:
+        x = apply_biosppy_preprocessing(x, sampling_rate=250)
+
+    # Preprocess
+    x, y, n_classes = preprocess_eeg_data(x, y)
+
+    print(f"Successfully loaded EEG data with {n_classes} classes")
     
     # Shuffle data
     indices = np.random.permutation(len(x))
@@ -578,20 +591,35 @@ def backward_pass(grad, network, learning_rate):
         grad = layer.backward(grad, learning_rate)
     return grad
 
+def compute_class_weights(y_set):
+    """Compute inverse-frequency weights for imbalanced BCI classes."""
+    class_indices = np.argmax(y_set, axis=1).flatten()
+    n_classes = y_set.shape[1]
+    counts = np.bincount(class_indices, minlength=n_classes).astype(np.float32)
+    counts[counts == 0] = 1.0
+    weights = len(class_indices) / (n_classes * counts)
+    return weights.reshape(n_classes, 1)
+
+def sample_weight_for_label(y, class_weights):
+    """Return the class weight for a one-hot column label."""
+    class_index = int(np.argmax(y))
+    return float(class_weights[class_index, 0])
+
 def compute_accuracy(predictions, targets):
     """Compute classification accuracy."""
     pred_classes = np.argmax(predictions, axis=0)
     true_classes = np.argmax(targets, axis=0)
     return np.mean(pred_classes == true_classes)
 
-def evaluate(x_set, y_set, network):
+def evaluate(x_set, y_set, network, class_weights=None):
     """Evaluate model on a dataset."""
     total_loss = 0
     total_acc = 0
     
     for x, y in zip(x_set, y_set):
         output = forward_pass(x, network)
-        loss = cross_entropy(y, output)
+        sample_weight = sample_weight_for_label(y, class_weights) if class_weights is not None else 1.0
+        loss = cross_entropy(y, output, sample_weight=sample_weight)
         acc = compute_accuracy(output, y)
         total_loss += loss
         total_acc += acc
@@ -601,19 +629,26 @@ def evaluate(x_set, y_set, network):
     
     return avg_loss, avg_acc
 
-def run_training_loop(num_runs=32, epochs_per_run=2014, learning_rate=0.0001):
+def run_training_loop(num_runs=32, epochs_per_run=None, learning_rate=0.0001):
     """
-    Run multiple training sessions, cycling through BNCI datasets.
+    Run one deterministic sweep over BNCI dataset sets.
+
+    One run is one BNCI dataset set: 1/32 of the full configured dataset
+    structure. One epoch is one data item from that set's training split.
+    By default, each set runs len(x_train) epochs so every training item in
+    that set is used once.
     
     Args:
-        num_runs: Number of training sessions to run
-        epochs_per_run: Number of epochs per training session
+        num_runs: Number of BNCI dataset sets to train on.
+        epochs_per_run: Training items to consume per dataset set. If None,
+            use every item in the set's training split once.
         learning_rate: Learning rate for training
     """
     print(f"\n{'='*80}")
     print(f"Starting BNCI Dataset Training Loop")
-    print(f"Will run {num_runs} training sessions, {epochs_per_run} epochs each")
-    print(f"Cycling through BNCI Horizon 2020 datasets")
+    epoch_plan = "all training items in each set" if epochs_per_run is None else f"{epochs_per_run} items per set"
+    print(f"Will run {num_runs} dataset sets, {epoch_plan}")
+    print(f"Each dataset set is 1/32 of the BNCI structure")
     print(f"{'='*80}\n")
     
     for run in range(num_runs):
@@ -622,9 +657,11 @@ def run_training_loop(num_runs=32, epochs_per_run=2014, learning_rate=0.0001):
         print(f"{'#'*60}\n")
         
         try:
-            # Load data (will automatically cycle to next BNCI dataset)
+            # Load a deterministic BNCI dataset: run 1 starts at dataset 1.
             (x_train, y_train), (x_val, y_val), (x_test, y_test), n_classes = load_and_split_data(
-                apply_preprocessing=True
+                apply_preprocessing=True,
+                dataset_index=run,
+                require_bnci=True
             )
             
             # Build network dynamically based on the prepared sample shape.
@@ -651,39 +688,44 @@ def run_training_loop(num_runs=32, epochs_per_run=2014, learning_rate=0.0001):
                     print("Starting with fresh weights")
             
             # Training loop for this session
+            class_weights = compute_class_weights(y_train)
             print(f"Training on {len(x_train)} samples, {n_classes} classes")
             print(f"Input sample shape: {input_shape}; flattened size: {int(np.prod(input_shape))}")
+            print(f"Class weights: {class_weights.flatten()}")
             print(f"Network: {len(network)} layers")
+
+            total_epochs = len(x_train) if epochs_per_run is None else epochs_per_run
+            log_interval = max(1, min(1000, total_epochs))
+            print(f"Epochs for this set: {total_epochs} (one training item per epoch)")
             
-            for epoch in range(epochs_per_run):
+            total_loss = 0
+            total_acc = 0
+            
+            for epoch in range(total_epochs):
                 epoch_start = time.time()
-                
-                # Train on all samples
-                total_loss = 0
-                total_acc = 0
-                
-                for x, y in zip(x_train, y_train):
-                    output = forward_pass(x, network)
-                    loss = cross_entropy(y, output)
-                    acc = compute_accuracy(output, y)
-                    total_loss += loss
-                    total_acc += acc
-                    
-                    grad = cross_entropy_prime(y, output)
-                    backward_pass(grad, network, learning_rate)
-                
-                train_loss = total_loss / len(x_train)
-                train_acc = total_acc / len(x_train)
-                
-                # Validate
-                val_loss, val_acc = evaluate(x_val, y_val, network)
-                
-                # Test every 10 epochs
-                if (epoch + 1) % 10 == 0:
-                    test_loss, test_acc = evaluate(x_test, y_test, network)
-                    print(f"Epoch {epoch+1:3d}/{epochs_per_run} | Train: {train_loss:.4f}/{train_acc:.4f} | Val: {val_loss:.4f}/{val_acc:.4f} | Test: {test_loss:.4f}/{test_acc:.4f}")
-                else:
-                    print(f"Epoch {epoch+1:3d}/{epochs_per_run} | Train: {train_loss:.4f}/{train_acc:.4f} | Val: {val_loss:.4f}/{val_acc:.4f}")
+
+                sample_index = epoch % len(x_train)
+                x = x_train[sample_index]
+                y = y_train[sample_index]
+
+                output = forward_pass(x, network)
+                sample_weight = sample_weight_for_label(y, class_weights)
+                loss = cross_entropy(y, output, sample_weight=sample_weight)
+                acc = compute_accuracy(output, y)
+                total_loss += loss
+                total_acc += acc
+
+                grad = cross_entropy_prime(y, output, sample_weight=sample_weight)
+                backward_pass(grad, network, learning_rate)
+
+                train_loss = total_loss / (epoch + 1)
+                train_acc = total_acc / (epoch + 1)
+
+                should_evaluate = (epoch + 1) == total_epochs or (epoch + 1) % log_interval == 0
+                if should_evaluate:
+                    val_loss, val_acc = evaluate(x_val, y_val, network, class_weights=class_weights)
+                    test_loss, test_acc = evaluate(x_test, y_test, network, class_weights=class_weights)
+                    print(f"Epoch {epoch+1:3d}/{total_epochs} | Train: {train_loss:.4f}/{train_acc:.4f} | Val: {val_loss:.4f}/{val_acc:.4f} | Test: {test_loss:.4f}/{test_acc:.4f}")
             
             # Save weights after this session
             save_weights(network)
@@ -694,7 +736,7 @@ def run_training_loop(num_runs=32, epochs_per_run=2014, learning_rate=0.0001):
             continue
     
     print(f"\n{'='*80}")
-    print(f"Training loop complete! Ran {num_runs} sessions")
+    print(f"Training loop complete! Ran {num_runs} dataset sets")
     print(f"{'='*80}")
     
     # Cleanup temporary files
@@ -702,9 +744,7 @@ def run_training_loop(num_runs=32, epochs_per_run=2014, learning_rate=0.0001):
 
 def cleanup_files():
     """Clean up temporary files created during training."""
-    files_to_remove = [
-        "current_dataset_index.txt"  # Keep weights.npz for accumulation across runs
-    ]
+    files_to_remove = []
     
     print("\n🧹 Cleaning up temporary files...")
     for file_path in files_to_remove:
@@ -720,5 +760,5 @@ def cleanup_files():
     print("✓ Cleanup complete")
 
 if __name__ == "__main__":
-    # Run the training loop for all 32 BNCI datasets
-    run_training_loop(num_runs=32, epochs_per_run=2014, learning_rate=0.0001)
+    # Run one training epoch per data item in each of the 32 BNCI dataset sets.
+    run_training_loop(num_runs=32, epochs_per_run=None, learning_rate=0.0001)

@@ -1,165 +1,68 @@
-# AI Neural Network Implementation for BCI Project
+# AI Neural Network Implementation for BCI
 
-**👉 New to this project? Start with [QUICKSTART.md](QUICKSTART.md) for quick setup instructions!**
+This project is a from-scratch NumPy/SciPy neural network for biometric BCI classification. It does not use external deep-learning frameworks for model layers, labels, losses, or training.
 
-**📋 To use your EEG data? See [BIOSPPY_GUIDE.md](BIOSPPY_GUIDE.md) for detailed data preparation!**
+The data path is BCI-only:
 
-## Current Architecture Overview
+1. Load a configured BNCI Horizon 2020 dataset.
+2. Optionally load a local `.mat` or `.npz` EEG/biometric file.
+3. Optionally generate synthetic EEG-like data when BioSPPy is installed and BNCI/local data is not required.
+4. Preprocess signal data with SciPy/BioSPPy-style filtering.
+5. Normalize channel-aware biometric data.
+6. Train the custom network with weighted categorical cross-entropy.
 
-This is a custom neural network implementation built from scratch in Python (no PyTorch/TensorFlow for core layers) designed for EEG/BCI data classification. Supports both real EEG data via biosppy and MNIST (for testing).
+## Files
 
-### File Structure
+- `main.py` - BNCI/local data loading, signal preprocessing, shaping, training, evaluation, and weight saving.
+- `losses.py` - Weighted categorical cross-entropy for one-hot BCI labels.
+- `dense.py` - Fully connected layer.
+- `activation.py` - Sigmoid and tanh activation layers.
+- `reshape.py` - Shape conversion layer.
+- `convolution.py` - Optional 2D convolution layer.
+- `data_explorer.py` - Dataset inspection and signal preprocessing helpers.
+- `config.py` - Project configuration values.
+- `requirements.txt` - Runtime dependencies for NumPy/SciPy/BioSPPy workflow.
 
-- **main.py** - Main training loop; loads data (pyscppy or MNIST fallback), trains with 75/15/10 split
-- **layer.py** - Base `Layer` class defining forward/backward interface
-- **dense.py** - Fully connected (Dense) layer with weight updates
-- **convolution.py** - 2D Convolutional layer using scipy's correlate2d/convolve2d
-- **activation.py** - Activation functions: Sigmoid, Tanh, and Activate base class
-- **losses.py** - Cross-entropy loss and its derivative
-- **reshape.py** - Reshape layer for flattening data
-- **test.py** - Testing utilities for signal processing
-- **weights.npz** - Saved weights from training
-- **requirements.txt** - Python dependencies including pyscppy
+## Data Shape Contract
 
-### Network Architecture (EEG-Adapted)
+Raw biometric inputs may be:
 
-```
-Input (1, 1, n_timepoints)
-  ↓
-Convolution (3x3 kernel, 5 filters)
-  ↓
-Sigmoid Activation
-  ↓
-Reshape to (flattened, 1)
-  ↓
-Dense (flattened → 100)
-  ↓
-Sigmoid Activation
-  ↓
-Dense (100 → n_classes)
-  ↓
-Softmax
-  ↓
-Output (n_classes)
-```
+- `(samples, channels, timepoints)` for EEG epochs.
+- `(samples, features)` for feature/channel rows.
+- `(samples, timepoints)` for single-channel time series.
 
-### Training Details
+`main.py` converts these to the custom layer format:
 
-- **Loss Function**: Cross-entropy
-- **Epochs**: 500
-- **Learning Rate**: 0.0001
-- **Data Split**: 75% train / 15% validation / 10% test
-- **Batch Size**: 1 (SGD - processes each sample individually)
-- **Training Metrics**: Loss and accuracy tracked per epoch
+- `(samples, 1, channels, timepoints)` for epoch data.
+- `(samples, 1, 1, features)` for feature rows.
 
-## Using with pyscppy
+Labels are remapped to stable zero-based one-hot vectors shaped `(samples, classes, 1)`.
 
-### Installation
+## Loss And Metrics
+
+The classifier uses:
+
+- Softmax output.
+- Weighted categorical cross-entropy.
+- Inverse-frequency class weights computed from the training split.
+- Accuracy from predicted class index vs. one-hot target index.
+
+The class weighting is important for BCI datasets such as P300 tasks, where non-target labels can dominate.
+
+## Running
+
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Data Format Expected
-
-The `load_pyscppy_data()` function expects pyscppy to provide:
-- `x`: EEG signals of shape `(n_samples, n_features)` or `(n_samples, n_channels, n_timepoints)`
-- `y`: Class labels of shape `(n_samples,)` with integer class indices
-
-### Preprocessing
-
-- **Normalization**: Z-score normalization (zero mean, unit variance)
-- **Encoding**: One-hot encoding of class labels
-- **Reshaping**: Adapted for network input compatibility
-
-### Adjusting Network for Your Data
-
-Modify the network architecture in `main.py` based on your EEG data shape:
-
-```python
-# Example: if EEG data is (n_samples, 128) - 128 channels/features
-# Input shape after preprocessing: (1, 1, 128)
-network = [
-    Convolution((1, 1, 128), 3, 5),     # Input shape, kernel size, filters
-    Sigmoid(),
-    Reshape((5, 1, 126), (5 * 126, 1)), # Output shape of conv, new shape
-    Dense(5 * 126, 100),
-    Sigmoid(),
-    Dense(100, n_classes),
-    Softmax()
-]
-```
-
-### Running Training
+Run training:
 
 ```bash
 python main.py
 ```
 
-Expected output:
-```
-Starting training...
-Train samples: 750, Val samples: 150, Test samples: 100
-Epoch 10/500
-  Train Loss: 0.123456 | Train Acc: 0.8500
-  Val Loss: 0.145678 | Val Acc: 0.8200
-  ...
-```
+The default training loop starts at BNCI dataset 1 and proceeds deterministically by session number. It does not silently substitute unrelated image data if a BCI dataset fails.
 
-## Customization Guide
-
-### Changing the Data Split
-
-Edit `load_and_split_data()` parameters:
-```python
-(x_train, y_train), (x_val, y_val), (x_test, y_test), n_classes = load_and_split_data(
-    train_ratio=0.75, 
-    val_ratio=0.15, 
-    test_ratio=0.10
-)
-```
-
-### Adjusting Learning Parameters
-
-```python
-epochs = 500           # Number of training iterations
-learning_rate = 0.0001 # Step size for weight updates
-```
-
-### Changing Network Depth
-
-Add more Dense layers for a deeper network:
-```python
-network = [
-    Convolution((1, 1, 128), 3, 5),
-    Sigmoid(),
-    Reshape((5, 1, 126), (630, 1)),
-    Dense(630, 256),      # Hidden layer 1
-    Sigmoid(),
-    Dense(256, 128),      # Hidden layer 2
-    Sigmoid(),
-    Dense(128, n_classes),
-    Softmax()
-]
-```
-
-## Key Dependencies
-
-- **numpy**: Array operations
-- **scipy**: Convolution operations
-- **tensorflow**: Data utilities (to_categorical)
-- **pyscppy**: EEG dataset loading
-- **biosppy**: Signal processing (optional, for filtering)
-
-## Fallback Behavior
-
-If pyscppy is not installed or dataset fails to load, the system automatically falls back to MNIST for testing purposes. This allows you to verify the network architecture works before integrating real EEG data.
-
-## Next Steps for BCI Integration
-
-1. **Verify pyscppy Data Format**: Test `load_pyscppy_data()` output shape
-2. **Optimize Network Architecture**: Adjust conv layers, filters, and dense layers for best performance
-3. **Add Signal Preprocessing**: Use biosppy for filtering (bandpass, notch filters)
-4. **Hyperparameter Tuning**: Experiment with learning rate, regularization
-5. **Cross-validation**: Consider k-fold cross-validation for better validation metrics
-
+By default, each BNCI dataset set runs one training epoch per sample in that set's training split, so the training samples in each 1/32 set are consumed once before the loop advances.
