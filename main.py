@@ -55,40 +55,37 @@ def load_biosppy_eeg_data(data_file=None):
     try:
         print("Attempting to load from BNCI Horizon 2020 dataset...")
         
-        # BNCI Horizon 2020 dataset
-        dataset_url = "http://www.bbci.de/competition/download/competition_iv/BNCI2014001R.zip"
+        # BNCI Horizon 2020 - Four class motor imagery (001-2014)
+        # Individual .mat files for each subject and session
+        base_url = "https://bnci-horizon-2020.eu/database/data-sets/001-2014/"
         
-        print(f"Downloading BNCI Horizon 2020 data...")
+        # Try to download first training file (A01T)
+        dataset_url = base_url + "A01T.mat"
+        
+        print(f"Downloading BNCI Horizon 2020 data from {dataset_url}...")
         with tempfile.TemporaryDirectory() as tmpdir:
-            zip_path = os.path.join(tmpdir, "bnci.zip")
-            urllib.request.urlretrieve(dataset_url, zip_path)
+            mat_path = os.path.join(tmpdir, "bnci_data.mat")
+            urllib.request.urlretrieve(dataset_url, mat_path)
             
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(tmpdir)
+            # Load the .mat file
+            data = loadmat(mat_path)
             
-            # Look for .mat files in extracted directory
-            mat_files = []
-            for root, dirs, files in os.walk(tmpdir):
-                for file in files:
-                    if file.endswith('.mat'):
-                        mat_files.append(os.path.join(root, file))
+            # BNCI data structure typically has 'X' (features) and 'y' (labels)
+            # Check for various possible key names
+            if 'X' in data and 'y' in data:
+                x = data['X']
+                y = data['y'].flatten()
+            elif 'x' in data and 'y' in data:
+                x = data['x']
+                y = data['y'].flatten()
+            else:
+                # List available keys for debugging
+                available_keys = [k for k in data.keys() if not k.startswith('__')]
+                raise KeyError(f"Could not find X/x and y in BNCI data. Available keys: {available_keys}")
             
-            if mat_files:
-                # Load first available file
-                data = loadmat(mat_files[0])
-                # BNCI data typically has 'X' (features) and 'y' (labels)
-                if 'X' in data and 'y' in data:
-                    x = data['X']
-                    y = data['y'].flatten()
-                elif 'x' in data and 'y' in data:
-                    x = data['x']
-                    y = data['y'].flatten()
-                else:
-                    raise KeyError("Could not find X/x and y in BNCI data")
-                
-                print(f"Successfully loaded BNCI Horizon 2020 data")
-                print(f"X shape: {x.shape}, Y shape: {y.shape}")
-                return x, y
+            print(f"Successfully loaded BNCI Horizon 2020 data")
+            print(f"X shape: {x.shape}, Y shape: {y.shape}")
+            return x, y
     except Exception as e:
         print(f"Could not load from BNCI Horizon 2020: {e}")
     
