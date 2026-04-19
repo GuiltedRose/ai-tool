@@ -25,7 +25,7 @@ except ImportError:
 
 class Softmax(Layer):
     def forward(self, input):
-        tmp = np.exp(input)
+        tmp = np.exp(input - np.max(input))
         self.output = tmp / np.sum(tmp)
         return self.output
     def backward(self, output_gradient, learning_rate):
@@ -161,26 +161,32 @@ def load_bnci_dataset(dataset_index):
                                     y_data = trial_data[y_field]
                                     print(f"  Inferred y field: {y_field}")
                         
-                        # Process extracted data
-                        if x_data is not None:
-                            x = x_data[0, 0] if isinstance(x_data, np.ndarray) and x_data.dtype == object and x_data.shape == (1, 1) else x_data
-                            if hasattr(x, 'flatten') and len(x.shape) > 2:
-                                x = x.reshape(x.shape[0], -1)  # Reshape to (n_samples, features)
-                            
-                            if y_data is not None:
-                                y = y_data[0, 0] if isinstance(y_data, np.ndarray) and y_data.dtype == object and y_data.shape == (1, 1) else y_data
-                                y = y.flatten() if hasattr(y, 'flatten') else y
-                            else:
-                                # Generate dummy labels if missing
-                                n_samples = x.shape[0] if len(x.shape) > 0 else 1
-                                y = np.zeros(n_samples)
-                                print(f"  Warning: No labels found, using zeros")
-                            
-                            print(f"✓ Successfully loaded {filename}.mat")
-                            print(f"  Shape: X={x.shape}, Y={y.shape}, Classes={len(np.unique(y))}")
-                            return x, y
+                        # Extract raw data without forcing into standard format
+                        def unpack_matlab_cell(data):
+                            """Recursively unpack MATLAB cell arrays."""
+                            while isinstance(data, np.ndarray) and data.dtype == object and data.shape == (1, 1):
+                                data = data[0, 0]
+                            return data
+                        
+                        # Unpack the raw data
+                        x_raw = unpack_matlab_cell(x_data) if x_data is not None else None
+                        y_raw = unpack_matlab_cell(y_data) if y_data is not None else None
+                        
+                        print(f"  Unpacked X type: {type(x_raw)}, ", end="")
+                        if isinstance(x_raw, np.ndarray):
+                            print(f"shape: {x_raw.shape}, dtype: {x_raw.dtype}")
                         else:
-                            print(f"  Could not identify X data field")
+                            print(f"length: {len(x_raw) if hasattr(x_raw, '__len__') else 'N/A'}")
+                        
+                        print(f"  Unpacked y type: {type(y_raw)}, ", end="")
+                        if isinstance(y_raw, np.ndarray):
+                            print(f"shape: {y_raw.shape}, dtype: {y_raw.dtype}")
+                        else:
+                            print(f"value: {y_raw}")
+                        
+                        # Return raw biological signal data as-is for proper handling
+                        print(f"✓ Successfully loaded {filename}.mat (raw biological data)")
+                        return x_raw, y_raw
                     else:
                         # Unstructured - return as is
                         print(f"  Unstructured array: shape={trial_data.shape}")
@@ -374,33 +380,90 @@ def apply_biosppy_preprocessing(x, sampling_rate=250):
     print(f"Processed EEG data shape: {x_processed.shape}")
     return x_processed
 
+def encode_labels(y):
+    """Map arbitrary class labels to stable zero-based one-hot vectors."""
+    y = np.array(y).flatten()
+    if y.size == 0:
+        raise ValueError("No labels found in data")
+
+    unique_classes = np.unique(y)
+    class_to_index = {label: idx for idx, label in enumerate(unique_classes)}
+    y_index = np.array([class_to_index[label] for label in y], dtype=np.int32)
+    y_cat = np.eye(len(unique_classes), dtype=np.float32)[y_index]
+    return y_cat.reshape(len(y_cat), len(unique_classes), 1), len(unique_classes)
+
+def reshape_eeg_for_network(x):
+    """
+    Convert biometric samples to the channel-first shape expected by the
+    custom layers: (n_samples, depth, height, width).
+    """
+    x = np.asarray(x, dtype=np.float32)
+    x = np.squeeze(x)
+
+    if x.ndim == 1:
+        x = x.reshape(-1, 1)
+
+    if x.ndim == 2:
+        # Tabular/features or single-channel time series:
+        # (samples, features) -> (samples, 1, 1, features)
+        return x.reshape(x.shape[0], 1, 1, x.shape[1])
+
+    if x.ndim == 3:
+        # EEG/biometric epochs:
+        # (samples, channels, timepoints) -> (samples, 1, channels, timepoints)
+        return x[:, np.newaxis, :, :]
+
+    if x.ndim == 4:
+        # Already channel-first if the singleton/model depth is in axis 1.
+        if x.shape[1] <= x.shape[-1]:
+            return x
+        # Common channels-last layout:
+        # (samples, height, width, depth) -> (samples, depth, height, width)
+        return np.transpose(x, (0, 3, 1, 2))
+
+    raise ValueError(f"Unsupported EEG data shape: {x.shape}")
+
 def preprocess_eeg_data(x, y):
     """
     Preprocess EEG/time-series data.
     x shape: (n_samples, n_channels, n_timepoints) or (n_samples, n_features)
     y shape: (n_samples,) with class labels
     """
-    # Normalize EEG data to [-1, 1] range
-    mean = np.mean(x, axis=0)
-    std = np.std(x, axis=0) + 1e-8
-    x = (x - mean) / std
+    x = np.asarray(x, dtype=np.float32)
+    y = np.array(y).flatten()
     
-    # Get number of classes
-    n_classes = len(np.unique(y))
+    # Validate data
+    if x.shape[0] != y.shape[0]:
+        print(f"Data mismatch: x.shape[0]={x.shape[0]}, y.shape[0]={y.shape[0]}")
+        # Truncate to match
+        min_samples = min(x.shape[0], y.shape[0])
+        x = x[:min_samples]
+        y = y[:min_samples]
     
-    # Convert labels to one-hot encoding
-    y_cat = to_categorical(y, num_classes=n_classes)
+    if x.shape[0] == 0:
+        raise ValueError("No valid samples in data")
     
-    # Reshape for network compatibility
-    if x.ndim == 2:
-        # (n_samples, n_features) -> (n_samples, 1, 1, n_features)
-        x = x.reshape(len(x), 1, 1, -1)
-    elif x.ndim == 3:
-        # (n_samples, n_channels, n_timepoints) -> add batch dimension if needed
-        x = x.reshape(len(x), x.shape[1], x.shape[2], 1)
+    # Normalize data to [-1, 1] range
+    try:
+        if x.ndim >= 2:
+            # Normalize across all dimensions except samples
+            mean = np.mean(x)
+            std = np.std(x) + 1e-8
+        else:
+            mean = np.mean(x)
+            std = np.std(x) + 1e-8
+        
+        x = (x - mean) / std
+    except Exception as e:
+        print(f"Warning: Normalization failed: {e}, skipping")
     
-    # Reshape labels
-    y_cat = y_cat.reshape(len(y_cat), n_classes, 1)
+    y_cat, n_classes = encode_labels(y)
+    if n_classes < 2:
+        raise ValueError(f"Need at least 2 classes for classification, found {n_classes}")
+
+    x = reshape_eeg_for_network(x)
+    print(f"Network input shape: {x.shape} (samples, depth, height, width)")
+    print(f"Encoded labels shape: {y_cat.shape}; classes: {n_classes}")
     
     return x, y_cat, n_classes
 
@@ -440,32 +503,10 @@ def load_and_split_data(data_file=None, train_ratio=0.75, val_ratio=0.15, test_r
         print("Falling back to MNIST for testing...")
         from keras.datasets import mnist
         
-        def preprocess_data(x, y, limit):
-            x = x[:limit]
-            y = y[:limit]
-            x = x.reshape(len(x), 1, 28, 28)
-            x = x.astype("float32") / 255
-            y = to_categorical(y)
-            y = y.reshape(len(y), 10, 1)
-            return x, y
-        
         (x_train_full, y_train_full), (x_test_full, y_test_full) = mnist.load_data()
-        x_train_full, y_train_full = preprocess_data(x_train_full, y_train_full, 60000)
-        x_test_full, y_test_full = preprocess_data(x_test_full, y_test_full, 10000)
-        
-        # Split training data: 75% train, 15% val, 10% test
-        n_total = len(x_train_full)
-        n_train = int(n_total * train_ratio)
-        n_val = int(n_total * val_ratio)
-        
-        x_train = x_train_full[:n_train]
-        y_train = y_train_full[:n_train]
-        x_val = x_train_full[n_train:n_train + n_val]
-        y_val = y_train_full[n_train:n_train + n_val]
-        x_test = np.vstack([x_train_full[n_train + n_val:], x_test_full])
-        y_test = np.vstack([y_train_full[n_train + n_val:], y_test_full])
-        
-        n_classes = 10
+        x = np.concatenate([x_train_full, x_test_full]).astype("float32") / 255
+        y = np.concatenate([y_train_full, y_test_full])
+        x, y, n_classes = preprocess_eeg_data(x, y)
         print("Loaded MNIST fallback data")
     
     # Shuffle data
@@ -475,8 +516,14 @@ def load_and_split_data(data_file=None, train_ratio=0.75, val_ratio=0.15, test_r
     
     # Split data
     n_total = len(x)
-    n_train = int(n_total * train_ratio)
-    n_val = int(n_total * val_ratio)
+    if n_total < 3:
+        raise ValueError(f"Need at least 3 samples to create train/val/test splits, found {n_total}")
+
+    n_train = max(1, int(n_total * train_ratio))
+    n_val = max(1, int(n_total * val_ratio))
+    if n_train + n_val >= n_total:
+        n_val = 1
+        n_train = n_total - 2
     
     x_train = x[:n_train]
     y_train = y[:n_train]
@@ -494,7 +541,18 @@ def load_and_split_data(data_file=None, train_ratio=0.75, val_ratio=0.15, test_r
 
 WEIGHTS_FILE = "weights.npz"
 
-WEIGHTS_FILE = "weights.npz"
+def build_network(input_shape, n_classes):
+    """Build a dense classifier for pre-shaped biometric samples."""
+    flattened_size = int(np.prod(input_shape))
+    return [
+        Reshape(input_shape, (flattened_size, 1)),
+        Dense(flattened_size, 128),
+        Sigmoid(),
+        Dense(128, 64),
+        Sigmoid(),
+        Dense(64, n_classes),
+        Softmax()
+    ]
 
 def save_weights(network):
     """Save network weights to file."""
@@ -569,19 +627,9 @@ def run_training_loop(num_runs=32, epochs_per_run=2014, learning_rate=0.0001):
                 apply_preprocessing=True
             )
             
-            # Build network dynamically based on data shape
-            network = [
-                Reshape(
-                    (x_train[0].shape[0], x_train[0].shape[1], x_train[0].shape[2]),
-                    (x_train[0].shape[0] * x_train[0].shape[1] * x_train[0].shape[2], 1)
-                ),
-                Dense(x_train[0].shape[0] * x_train[0].shape[1] * x_train[0].shape[2], 128),
-                Sigmoid(),
-                Dense(128, 64),
-                Sigmoid(),
-                Dense(64, n_classes),
-                Softmax()
-            ]
+            # Build network dynamically based on the prepared sample shape.
+            input_shape = x_train[0].shape
+            network = build_network(input_shape, n_classes)
             
             # Load existing weights if compatible
             if os.path.exists(WEIGHTS_FILE):
@@ -604,6 +652,7 @@ def run_training_loop(num_runs=32, epochs_per_run=2014, learning_rate=0.0001):
             
             # Training loop for this session
             print(f"Training on {len(x_train)} samples, {n_classes} classes")
+            print(f"Input sample shape: {input_shape}; flattened size: {int(np.prod(input_shape))}")
             print(f"Network: {len(network)} layers")
             
             for epoch in range(epochs_per_run):
@@ -673,4 +722,3 @@ def cleanup_files():
 if __name__ == "__main__":
     # Run the training loop for all 32 BNCI datasets
     run_training_loop(num_runs=32, epochs_per_run=2014, learning_rate=0.0001)
-
