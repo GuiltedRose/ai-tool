@@ -109,6 +109,8 @@ def load_bnci_dataset(dataset_index):
                 urllib.request.urlretrieve(dataset_url, mat_path)
                 
                 data = loadmat(mat_path)
+                available_keys = [k for k in data.keys() if not k.startswith('__')]
+                print(f"  Keys in file: {available_keys}")
                 
                 # Try different key patterns
                 x, y = None, None
@@ -121,14 +123,32 @@ def load_bnci_dataset(dataset_index):
                 elif 'signal' in data and 'label' in data:
                     x = data['signal']
                     y = data['label'].flatten()
+                elif 'data' in data:
+                    # BNCI format: structured array with trial data
+                    trial_data = data['data']
+                    # trial_data is typically shape (1, n_trials) with structured elements
+                    if trial_data.dtype.names:  # Structured array
+                        # Extract 'X' and 'y' from structured array
+                        if 'X' in trial_data.dtype.names and 'y' in trial_data.dtype.names:
+                            x = trial_data['X'][0][0]  # Unpack from nested structure
+                            y = trial_data['y'][0][0].flatten()
+                        else:
+                            print(f"  Structured array keys: {trial_data.dtype.names}")
+                    else:
+                        # Unstructured array - assume first elements are X and y
+                        x = trial_data
+                        # Try to find labels
+                        if 'labels' in data:
+                            y = data['labels'].flatten()
+                        elif 'y' in data:
+                            y = data['y'].flatten()
                 
                 if x is not None and y is not None:
                     print(f"✓ Successfully loaded {filename}.mat")
                     print(f"  Shape: X={x.shape}, Y={y.shape}, Classes={len(np.unique(y))}")
                     return x, y
                 else:
-                    available_keys = [k for k in data.keys() if not k.startswith('__')]
-                    print(f"  Keys in file: {available_keys}")
+                    print(f"  Could not extract X and y from available keys: {available_keys}")
         
         except urllib.error.HTTPError as e:
             print(f"  File not found: {e.code}")
