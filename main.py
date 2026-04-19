@@ -112,50 +112,81 @@ def load_bnci_dataset(dataset_index):
                 available_keys = [k for k in data.keys() if not k.startswith('__')]
                 print(f"  Keys in file: {available_keys}")
                 
-                # Try different key patterns
-                x, y = None, None
-                if 'X' in data and 'y' in data:
-                    x = data['X']
-                    y = data['y'].flatten()
-                elif 'x' in data and 'y' in data:
-                    x = data['x']
-                    y = data['y'].flatten()
-                elif 'signal' in data and 'label' in data:
-                    x = data['signal']
-                    y = data['label'].flatten()
-                elif 'data' in data:
-                    # Inspect the 'data' key structure
+                # BNCI datasets store everything under 'data' key
+                if 'data' in data:
                     raw_data = data['data']
-                    print(f"  'data' key type: {type(raw_data)}, shape: {raw_data.shape}, dtype: {raw_data.dtype}")
+                    print(f"  'data' type: {type(raw_data).__name__}, shape: {raw_data.shape}, dtype: {raw_data.dtype}")
                     
-                    # Try to extract from nested structure
-                    if raw_data.dtype.names:  # Structured array
-                        print(f"    Structured array fields: {raw_data.dtype.names}")
-                        field_names = raw_data.dtype.names
+                    # Unpack from (1, 1) shaped array
+                    trial_data = raw_data[0, 0]
+                    print(f"  Unpacked shape: {trial_data.shape}, dtype: {trial_data.dtype}")
+                    
+                    # Check if it's a structured array
+                    if trial_data.dtype.names:
+                        field_names = trial_data.dtype.names
+                        print(f"  Structured fields: {field_names}")
                         
-                        # Look for data fields (case insensitive)
-                        x_field = next((f for f in field_names if f.lower() in ['x', 'signal', 'eeg']), None)
-                        y_field = next((f for f in field_names if f.lower() in ['y', 'label', 'labels', 'class', 'classes']), None)
+                        # Extract all fields and show shapes
+                        x_data = None
+                        y_data = None
                         
-                        if x_field and y_field:
-                            x = raw_data[x_field][0][0] if raw_data[x_field].ndim > 1 else raw_data[x_field]
-                            y = raw_data[y_field][0][0] if raw_data[y_field].ndim > 1 else raw_data[y_field]
-                            y = y.flatten() if hasattr(y, 'flatten') else y
-                            print(f"    Extracted {x_field} and {y_field}")
+                        for field in field_names:
+                            field_data = trial_data[field]
+                            if hasattr(field_data, 'shape'):
+                                print(f"    {field}: shape={field_data.shape}, dtype={field_data.dtype}")
+                            
+                            # Identify X (signals) and y (labels) by field name
+                            if field.lower() in ['x', 'signal', 'eeg', 'trial']:
+                                x_data = field_data
+                            elif field.lower() in ['y', 'label', 'labels', 'class', 'classes', 'y_true']:
+                                y_data = field_data
+                        
+                        # If not found by name, use size heuristic
+                        if x_data is None or y_data is None:
+                            all_fields = {f: trial_data[f] for f in field_names}
+                            sizes = {f: d.size if hasattr(d, 'size') else 1 for f, d in all_fields.items()}
+                            print(f"  Field sizes: {sizes}")
+                            
+                            if x_data is None and field_names:
+                                # Largest field is likely X
+                                x_field = max((f for f in field_names), key=lambda f: sizes[f])
+                                x_data = trial_data[x_field]
+                                print(f"  Inferred X field: {x_field}")
+                            
+                            if y_data is None and len(field_names) > 1:
+                                # Smallest field is likely y
+                                remaining = [f for f in field_names if f != (x_field if x_data is not None else None)]
+                                if remaining:
+                                    y_field = min(remaining, key=lambda f: sizes[f])
+                                    y_data = trial_data[y_field]
+                                    print(f"  Inferred y field: {y_field}")
+                        
+                        # Process extracted data
+                        if x_data is not None:
+                            x = x_data[0, 0] if isinstance(x_data, np.ndarray) and x_data.dtype == object and x_data.shape == (1, 1) else x_data
+                            if hasattr(x, 'flatten') and len(x.shape) > 2:
+                                x = x.reshape(x.shape[0], -1)  # Reshape to (n_samples, features)
+                            
+                            if y_data is not None:
+                                y = y_data[0, 0] if isinstance(y_data, np.ndarray) and y_data.dtype == object and y_data.shape == (1, 1) else y_data
+                                y = y.flatten() if hasattr(y, 'flatten') else y
+                            else:
+                                # Generate dummy labels if missing
+                                n_samples = x.shape[0] if len(x.shape) > 0 else 1
+                                y = np.zeros(n_samples)
+                                print(f"  Warning: No labels found, using zeros")
+                            
+                            print(f"✓ Successfully loaded {filename}.mat")
+                            print(f"  Shape: X={x.shape}, Y={y.shape}, Classes={len(np.unique(y))}")
+                            return x, y
                         else:
-                            print(f"    No matching X/Y fields found")
-                            print(f"    First field values: {raw_data[field_names[0]][0] if len(field_names) > 0 else 'N/A'}")
+                            print(f"  Could not identify X data field")
                     else:
-                        # Direct array
-                        print(f"    Direct array structure")
-                        x = raw_data
-                
-                if x is not None and y is not None:
-                    print(f"✓ Successfully loaded {filename}.mat")
-                    print(f"  Shape: X={x.shape}, Y={y.shape}, Classes={len(np.unique(y))}")
-                    return x, y
+                        # Unstructured - return as is
+                        print(f"  Unstructured array: shape={trial_data.shape}")
+                        return trial_data, np.zeros(trial_data.shape[0] if len(trial_data.shape) > 0 else 1)
                 else:
-                    print(f"  Could not extract valid X and y data")
+                    print(f"  No 'data' key found, skipping")
 
         
         except urllib.error.HTTPError as e:
