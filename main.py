@@ -367,19 +367,16 @@ WEIGHTS_FILE = "weights.npz"
 )
 
 network = [
-        # Network architecture adapted to actual data dimensions
-        # After preprocessing: (n_samples, n_channels, n_timepoints, 1)
-        # For BNCI EEG: (n_samples, 4, 250, 1)
-        # For MNIST: (n_samples, 1, 28, 28)
-        Convolution((x_train[0].shape[0], x_train[0].shape[1], x_train[0].shape[2]), 1, 8),
-        Sigmoid(),
+        # Flatten the input: (n_channels, n_timepoints, 1) -> (n_channels * n_timepoints, 1)
         Reshape(
-            (8, x_train[0].shape[1], x_train[0].shape[2]),
-            (8 * x_train[0].shape[1] * x_train[0].shape[2], 1)
+            (x_train[0].shape[0], x_train[0].shape[1], x_train[0].shape[2]),
+            (x_train[0].shape[0] * x_train[0].shape[1] * x_train[0].shape[2], 1)
         ),
-        Dense(8 * x_train[0].shape[1] * x_train[0].shape[2], 100),
+        Dense(x_train[0].shape[0] * x_train[0].shape[1] * x_train[0].shape[2], 128),
         Sigmoid(),
-        Dense(100, n_classes),
+        Dense(128, 64),
+        Sigmoid(),
+        Dense(64, n_classes),
         Softmax()
 ]
 
