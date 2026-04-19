@@ -33,12 +33,119 @@ class Softmax(Layer):
        tmp = np.tile(self.output, n)
        return np.dot(tmp * (np.identity(n) - np.transpose(tmp)), output_gradient)
 
+def get_current_dataset_index():
+    """
+    Get and increment the current dataset index.
+    Cycles through 0-31 (32 total datasets from BNCI Horizon 2020).
+    """
+    counter_file = "current_dataset_index.txt"
+    
+    if os.path.exists(counter_file):
+        with open(counter_file, 'r') as f:
+            try:
+                current_index = int(f.read().strip())
+            except:
+                current_index = 0
+    else:
+        current_index = 0
+    
+    # Save the next index for next run
+    next_index = (current_index + 1) % 32
+    with open(counter_file, 'w') as f:
+        f.write(str(next_index))
+    
+    return current_index
+
+# BNCI Horizon 2020 Dataset Configurations
+BNCI_DATASETS = [
+    # Format: (dataset_id, base_url_suffix, file_pattern, description)
+    ("001-2014", "001-2014", ["A01T", "A02T", "A03T", "A04T", "A05T", "A06T", "A07T", "A08T", "A09T"], "Four class motor imagery - 9 subjects"),
+    ("002-2014", "002-2014", ["S01T", "S02T", "S03T", "S04T", "S05T", "S06T", "S07T", "S08T", "S09T", "S10T", "S11T", "S12T", "S13T", "S14T"], "Two class motor imagery - 14 subjects"),
+    ("003-2014", "003-2014", ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08"], "Mental arithmetic (fNIRS) - 8 subjects"),
+    ("004-2014", "004-2014", ["B01T", "B02T", "B03T", "B04T", "B05T", "B06T", "B07T", "B08T", "B09T"], "Two class motor imagery - 9 subjects"),
+    ("005-2014", "005-2014", ["S01", "S02"], "Auditory oddball during hypnosis - 2 subjects"),
+    ("006-2014", "006-2014", ["S01", "S02"], "SCP training in stroke - 2 subjects"),
+    ("007-2014", "007-2014", ["S00", "S01", "S02", "S04", "S05", "S06", "S07", "S09", "S10"], "Two-finger gameplay - 10 subjects"),
+    ("008-2014", "008-2014", ["A01", "A02", "A03", "A04", "A05", "A06", "A07", "A08"], "P300 speller with ALS - 8 subjects"),
+    ("009-2014", "009-2014", ["A01S", "A02S", "A03S", "A04S", "A05S", "A06S", "A07S", "A08S", "A09S", "A10S"], "Covert and overt ERP-based BCI - 10 subjects"),
+    ("001-2015", "001-2015", ["S01A", "S02A", "S03A", "S04A", "S05A", "S06A", "S07A", "S08A", "S09A", "S10A", "S11A", "S12A"], "Autocalibration and recurrent adaptation - 12 subjects"),
+    ("002-2015", "002-2015", ["S01"], "Neuroprosthetic control - 1 subject"),
+    ("003-2015", "003-2015", ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10"], "Visual P300 speller - 10 subjects"),
+    ("004-2015", "004-2015", ["A", "C", "D", "E", "F", "G", "H", "J", "K"], "Individual imagery - 9 subjects"),
+]
+
+def load_bnci_dataset(dataset_index):
+    """
+    Load a specific BNCI Horizon 2020 dataset.
+    
+    Args:
+        dataset_index: Index into BNCI_DATASETS (0-12 implemented, more can be added)
+    
+    Returns:
+        (x, y) or None if failed
+    """
+    if dataset_index >= len(BNCI_DATASETS):
+        print(f"Dataset index {dataset_index} not yet implemented (total: {len(BNCI_DATASETS)})")
+        return None
+    
+    dataset_id, url_suffix, file_list, description = BNCI_DATASETS[dataset_index]
+    
+    print(f"\n{'='*60}")
+    print(f"Loading BNCI Dataset {dataset_index + 1}/32")
+    print(f"ID: {dataset_id}")
+    print(f"Description: {description}")
+    print(f"{'='*60}\n")
+    
+    base_url = f"https://bnci-horizon-2020.eu/database/data-sets/{url_suffix}/"
+    
+    # Try to download and load the first available file from this dataset
+    for filename in file_list:
+        try:
+            dataset_url = base_url + filename + ".mat"
+            print(f"Attempting to download: {filename}.mat...")
+            
+            with tempfile.TemporaryDirectory() as tmpdir:
+                mat_path = os.path.join(tmpdir, f"{filename}.mat")
+                urllib.request.urlretrieve(dataset_url, mat_path)
+                
+                data = loadmat(mat_path)
+                
+                # Try different key patterns
+                x, y = None, None
+                if 'X' in data and 'y' in data:
+                    x = data['X']
+                    y = data['y'].flatten()
+                elif 'x' in data and 'y' in data:
+                    x = data['x']
+                    y = data['y'].flatten()
+                elif 'signal' in data and 'label' in data:
+                    x = data['signal']
+                    y = data['label'].flatten()
+                
+                if x is not None and y is not None:
+                    print(f"✓ Successfully loaded {filename}.mat")
+                    print(f"  Shape: X={x.shape}, Y={y.shape}, Classes={len(np.unique(y))}")
+                    return x, y
+                else:
+                    available_keys = [k for k in data.keys() if not k.startswith('__')]
+                    print(f"  Keys in file: {available_keys}")
+        
+        except urllib.error.HTTPError as e:
+            print(f"  File not found: {e.code}")
+            continue
+        except Exception as e:
+            print(f"  Error loading {filename}: {e}")
+            continue
+    
+    print(f"Could not load any files from dataset {dataset_id}")
+    return None
+
 def load_biosppy_eeg_data(data_file=None):
     """
-    Load EEG data from available sources.
+    Load EEG data from available sources, cycling through BNCI Horizon 2020 datasets.
     
-    Attempts to:
-    1. Load from BNCI Horizon 2020 dataset (automatic download)
+    Attempts to (in order):
+    1. Cycle through BNCI Horizon 2020 datasets (13 implemented)
     2. Load from local data file (.mat or .npz)
     3. Generate synthetic EEG data using biosppy utilities
     4. Fall back to MNIST
@@ -51,43 +158,14 @@ def load_biosppy_eeg_data(data_file=None):
         y: Class labels (n_samples,)
     """
     
-    # Try to load from BNCI Horizon 2020 dataset
-    try:
-        print("Attempting to load from BNCI Horizon 2020 dataset...")
-        
-        # BNCI Horizon 2020 - Four class motor imagery (001-2014)
-        # Individual .mat files for each subject and session
-        base_url = "https://bnci-horizon-2020.eu/database/data-sets/001-2014/"
-        
-        # Try to download first training file (A01T)
-        dataset_url = base_url + "A01T.mat"
-        
-        print(f"Downloading BNCI Horizon 2020 data from {dataset_url}...")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mat_path = os.path.join(tmpdir, "bnci_data.mat")
-            urllib.request.urlretrieve(dataset_url, mat_path)
-            
-            # Load the .mat file
-            data = loadmat(mat_path)
-            
-            # BNCI data structure typically has 'X' (features) and 'y' (labels)
-            # Check for various possible key names
-            if 'X' in data and 'y' in data:
-                x = data['X']
-                y = data['y'].flatten()
-            elif 'x' in data and 'y' in data:
-                x = data['x']
-                y = data['y'].flatten()
-            else:
-                # List available keys for debugging
-                available_keys = [k for k in data.keys() if not k.startswith('__')]
-                raise KeyError(f"Could not find X/x and y in BNCI data. Available keys: {available_keys}")
-            
-            print(f"Successfully loaded BNCI Horizon 2020 data")
-            print(f"X shape: {x.shape}, Y shape: {y.shape}")
-            return x, y
-    except Exception as e:
-        print(f"Could not load from BNCI Horizon 2020: {e}")
+    # Try to load from cycling BNCI Horizon 2020 datasets
+    current_dataset_idx = get_current_dataset_index()
+    bnci_data = load_bnci_dataset(current_dataset_idx)
+    if bnci_data is not None:
+        x, y = bnci_data
+        print(f"Loaded BNCI Horizon 2020 data")
+        print(f"X shape: {x.shape}, Y shape: {y.shape}")
+        return x, y
     
     # Try to load from local file first
     if data_file is not None and os.path.exists(data_file):
