@@ -367,13 +367,17 @@ WEIGHTS_FILE = "weights.npz"
 )
 
 network = [
-        # Architecture now flexible for different input shapes
-        # For EEG: may need to adjust based on signal dimensions
-        # For 1D time-series: Conv1D can be simulated with Conv2D
-        Convolution((1, 1, 300), 3, 5),  # Adjust input shape for your EEG data
+        # Network architecture adapted to actual data dimensions
+        # After preprocessing: (n_samples, n_channels, n_timepoints, 1)
+        # For BNCI EEG: (n_samples, 4, 250, 1)
+        # For MNIST: (n_samples, 1, 28, 28)
+        Convolution((x_train[0].shape[0], x_train[0].shape[1], x_train[0].shape[2]), 1, 8),
         Sigmoid(),
-        Reshape((5, 1, 298), (5 * 298, 1)),
-        Dense(5 * 298, 100),
+        Reshape(
+            (8, x_train[0].shape[1], x_train[0].shape[2]),
+            (8 * x_train[0].shape[1] * x_train[0].shape[2], 1)
+        ),
+        Dense(8 * x_train[0].shape[1] * x_train[0].shape[2], 100),
         Sigmoid(),
         Dense(100, n_classes),
         Softmax()
