@@ -647,8 +647,7 @@ def run_training_loop(num_runs=5, epochs_per_run=50):
 def cleanup_files():
     """Clean up temporary files created during training."""
     files_to_remove = [
-        WEIGHTS_FILE,
-        "current_dataset_index.txt"
+        "current_dataset_index.txt"  # Keep weights.npz for accumulation across runs
     ]
     
     print("\n🧹 Cleaning up temporary files...")
@@ -665,6 +664,6 @@ def cleanup_files():
     print("✓ Cleanup complete")
 
 if __name__ == "__main__":
-    # Run the training loop instead of single training session
-    run_training_loop(num_runs=5, epochs_per_run=50)
+    # Run the training loop for all 32 BNCI datasets
+    run_training_loop(num_runs=32, epochs_per_run=2014)
 
