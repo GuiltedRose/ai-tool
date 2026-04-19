@@ -537,55 +537,134 @@ def evaluate(x_set, y_set, network):
     
     return avg_loss, avg_acc
 
-# Training loop with validation and testing
-print("Starting training...")
-print(f"Train samples: {len(x_train)}, Val samples: {len(x_val)}, Test samples: {len(x_test)}")
+def run_training_loop(num_runs=5, epochs_per_run=50):
+    """
+    Run multiple training sessions, cycling through BNCI datasets.
+    
+    Args:
+        num_runs: Number of training sessions to run
+        epochs_per_run: Number of epochs per training session
+    """
+    print(f"\n{'='*80}")
+    print(f"Starting BNCI Dataset Training Loop")
+    print(f"Will run {num_runs} training sessions, {epochs_per_run} epochs each")
+    print(f"Cycling through BNCI Horizon 2020 datasets")
+    print(f"{'='*80}\n")
+    
+    for run in range(num_runs):
+        print(f"\n{'#'*60}")
+        print(f"TRAINING SESSION {run + 1}/{num_runs}")
+        print(f"{'#'*60}\n")
+        
+        try:
+            # Load data (will automatically cycle to next BNCI dataset)
+            (x_train, y_train), (x_val, y_val), (x_test, y_test), n_classes = load_and_split_data(
+                apply_preprocessing=True
+            )
+            
+            # Build network dynamically based on data shape
+            network = [
+                Reshape(
+                    (x_train[0].shape[0], x_train[0].shape[1], x_train[0].shape[2]),
+                    (x_train[0].shape[0] * x_train[0].shape[1] * x_train[0].shape[2], 1)
+                ),
+                Dense(x_train[0].shape[0] * x_train[0].shape[1] * x_train[0].shape[2], 128),
+                Sigmoid(),
+                Dense(128, 64),
+                Sigmoid(),
+                Dense(64, n_classes),
+                Softmax()
+            ]
+            
+            # Load existing weights if compatible
+            if os.path.exists(WEIGHTS_FILE):
+                try:
+                    data = np.load(WEIGHTS_FILE)
+                    dense_layers = [l for l in network if isinstance(l, Dense)]
+                    for i, layer in enumerate(dense_layers):
+                        if f'dense_weights_{i}' in data and f'dense_bias_{i}' in data:
+                            weights = data[f'dense_weights_{i}']
+                            bias = data[f'dense_bias_{i}']
+                            if weights.shape == layer.weights.shape and bias.shape == layer.bias.shape:
+                                layer.weights = weights
+                                layer.bias = bias
+                            else:
+                                print(f"Weight shape mismatch for dense layer {i}, skipping")
+                    print("Loaded compatible weights")
+                except Exception as e:
+                    print(f"Could not load weights: {e}")
+                    print("Starting with fresh weights")
+            
+            # Training loop for this session
+            print(f"Training on {len(x_train)} samples, {n_classes} classes")
+            print(f"Network: {len(network)} layers")
+            
+            for epoch in range(epochs_per_run):
+                epoch_start = time.time()
+                
+                # Train on all samples
+                total_loss = 0
+                total_acc = 0
+                
+                for x, y in zip(x_train, y_train):
+                    output = forward_pass(x, network)
+                    loss = cross_entropy(y, output)
+                    acc = compute_accuracy(output, y)
+                    total_loss += loss
+                    total_acc += acc
+                    
+                    grad = cross_entropy_prime(y, output)
+                    backward_pass(grad, network, learning_rate)
+                
+                train_loss = total_loss / len(x_train)
+                train_acc = total_acc / len(x_train)
+                
+                # Validate
+                val_loss, val_acc = evaluate(x_val, y_val, network)
+                
+                # Test every 10 epochs
+                if (epoch + 1) % 10 == 0:
+                    test_loss, test_acc = evaluate(x_test, y_test, network)
+                    print(f"Epoch {epoch+1:3d}/{epochs_per_run} | Train: {train_loss:.4f}/{train_acc:.4f} | Val: {val_loss:.4f}/{val_acc:.4f} | Test: {test_loss:.4f}/{test_acc:.4f}")
+                else:
+                    print(f"Epoch {epoch+1:3d}/{epochs_per_run} | Train: {train_loss:.4f}/{train_acc:.4f} | Val: {val_loss:.4f}/{val_acc:.4f}")
+            
+            # Save weights after this session
+            save_weights()
+            print(f"✓ Session {run + 1} complete - weights saved")
+            
+        except Exception as e:
+            print(f"❌ Error in session {run + 1}: {e}")
+            continue
+    
+    print(f"\n{'='*80}")
+    print(f"Training loop complete! Ran {num_runs} sessions")
+    print(f"{'='*80}")
+    
+    # Cleanup temporary files
+    cleanup_files()
 
-for e in range(epochs):
-    epoch_start = time.time()
-    train_error = 0
-    train_acc = 0
+def cleanup_files():
+    """Clean up temporary files created during training."""
+    files_to_remove = [
+        WEIGHTS_FILE,
+        "current_dataset_index.txt"
+    ]
     
-    # Training phase
-    for x, y in zip(x_train, y_train):
-        output = forward_pass(x, network)
-        train_error += cross_entropy(y, output)
-        train_acc += compute_accuracy(output, y)
-        grad = cross_entropy_prime(y, output)
-        backward_pass(grad, network, learning_rate)
+    print("\n🧹 Cleaning up temporary files...")
+    for file_path in files_to_remove:
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                print(f"  ✓ Removed {file_path}")
+            except Exception as e:
+                print(f"  ❌ Could not remove {file_path}: {e}")
+        else:
+            print(f"  - {file_path} not found")
     
-    train_error /= len(x_train)
-    train_acc /= len(x_train)
-    
-    # Validation phase
-    val_loss, val_acc = evaluate(x_val, y_val, network)
-    
-    # Testing phase (optional - typically done only at end)
-    if (e + 1) % 50 == 0:
-        test_loss, test_acc = evaluate(x_test, y_test, network)
-    else:
-        test_loss, test_acc = 0, 0
-    
-    epoch_time = time.time() - epoch_start
-    total_time = time.time() - start_time
-    eta = (total_time / (e + 1)) * (epochs - (e + 1))
-    
-    save_weights()
-    
-    # Detailed logging
-    if (e + 1) % 10 == 0:
-        print(f"Epoch {e + 1}/{epochs}")
-        print(f"  Train Loss: {train_error:.6f} | Train Acc: {train_acc:.4f}")
-        print(f"  Val Loss: {val_loss:.6f} | Val Acc: {val_acc:.4f}")
-        if (e + 1) % 50 == 0:
-            print(f"  Test Loss: {test_loss:.6f} | Test Acc: {test_acc:.4f}")
-        print(f"  Time: {epoch_time:.2f}s | Total: {total_time:.2f}s | ETA: {eta:.2f}s")
+    print("✓ Cleanup complete")
 
-# Final testing
-print("\n" + "="*60)
-print("Final Evaluation on Test Set")
-print("="*60)
-test_loss, test_acc = evaluate(x_test, y_test, network)
-print(f"Test Loss: {test_loss:.6f}")
-print(f"Test Accuracy: {test_acc:.4f}")
+if __name__ == "__main__":
+    # Run the training loop instead of single training session
+    run_training_loop(num_runs=5, epochs_per_run=50)
 

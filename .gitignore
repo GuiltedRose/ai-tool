@@ -221,3 +221,4 @@ __marimo__/
 weights.npz
 *.mat
 eeg_data.npz
+current_dataset_index.txt
