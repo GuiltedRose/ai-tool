@@ -387,16 +387,28 @@ if os.path.exists(WEIGHTS_FILE):
         dense_layers = [l for l in network if isinstance(l, Dense)]
         for i, layer in enumerate(dense_layers):
             if f'dense_weights_{i}' in data and f'dense_bias_{i}' in data:
-                layer.weights = data[f'dense_weights_{i}']
-                layer.bias = data[f'dense_bias_{i}']
+                weights = data[f'dense_weights_{i}']
+                bias = data[f'dense_bias_{i}']
+                # Only load if shapes match
+                if weights.shape == layer.weights.shape and bias.shape == layer.bias.shape:
+                    layer.weights = weights
+                    layer.bias = bias
+                else:
+                    print(f"Weight shape mismatch for dense layer {i}, skipping")
         conv_layers = [l for l in network if isinstance(l, Convolution)]
         for i, layer in enumerate(conv_layers):
             if f'conv_kernels_{i}' in data and f'conv_biases_{i}' in data:
-                layer.kernels = data[f'conv_kernels_{i}']
-                layer.biases = data[f'conv_biases_{i}']
-        print("Loaded existing weights")
+                kernels = data[f'conv_kernels_{i}']
+                biases = data[f'conv_biases_{i}']
+                # Only load if shapes match
+                if kernels.shape == layer.kernels.shape and biases.shape == layer.biases.shape:
+                    layer.kernels = kernels
+                    layer.biases = biases
+                else:
+                    print(f"Weight shape mismatch for conv layer {i}, skipping")
+        print("Loaded compatible weights")
     except Exception as e:
-        print(f"Could not load weights (network architecture changed): {e}")
+        print(f"Could not load weights: {e}")
         print("Starting with fresh weights")
 
 epochs = 500
