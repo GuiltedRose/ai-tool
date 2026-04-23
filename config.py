@@ -36,7 +36,7 @@ NETWORK_CONFIG = {
 
 # Training Configuration
 TRAINING_CONFIG = {
-    'dataset_sets': 32,             # One set is 1/32 of the BNCI structure
+    'dataset_sets': 32,             # Full official BNCI catalog configured in main.py
     'epochs_per_set': None,         # None = one epoch per training sample in each set
     'learning_rate': 0.0001,        # Learning rate for SGD
     'batch_size': 1,                # Batch size (1 = SGD)

@@ -18,9 +18,9 @@ The training loop loads configured BNCI Horizon 2020 datasets in deterministic o
 
 - session 1 loads dataset 1
 - session 2 loads dataset 2
-- session 32 loads dataset 32, once all dataset configs are present
+- session 32 loads dataset 32 from the official BNCI catalog
 
-For each dataset set, the default run uses one training epoch per sample in that set's training split. That means each 1/32 set is walked once before moving to the next set.
+For each dataset set, the default run uses one training epoch per sample in that set's training split. That means each of the 32 configured catalog sets is walked once before moving to the next set.
 
 Within each dataset set, every configured `.mat` file in that set's file list is downloaded and merged before training begins.
 

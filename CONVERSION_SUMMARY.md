@@ -35,6 +35,6 @@ BNCI or local biometric file
 
 ## Remaining Work
 
-- Add the remaining BNCI dataset configs if the loop should truly run all 32 sessions.
+- Add dataset-specific loaders for catalog entries whose remote files use non-standard archives or structures.
 - Decide whether each BNCI dataset should train on continuous rows, epochs around events, or extracted features.
 - Add dataset-specific epoching for event-based tasks such as P300 if raw streams are not already segmented.

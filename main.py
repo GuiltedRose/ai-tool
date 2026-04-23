@@ -10,6 +10,7 @@ from losses import cross_entropy, cross_entropy_prime
 from reshape import Reshape
 import time
 import urllib.request
+import urllib.parse
 import tempfile
 import zipfile
 
@@ -31,41 +32,72 @@ class Softmax(Layer):
        return output_gradient
 
 # BNCI Horizon 2020 Dataset Configurations
+def numbered(prefix, start, stop, width=2, suffixes=("",)):
+    return [f"{prefix}{i:0{width}d}{suffix}" for i in range(start, stop + 1) for suffix in suffixes]
+
+def prefixed_urls(base_url, names, extension=".mat"):
+    return [f"{base_url}{name}{extension}" for name in names]
+
+BNCI_002_2025_FILES = (
+    [f"fe{i}_ses{session}_perc{percent}" for i in range(3, 9) for session in range(1, 4) for percent in (0, 50, 100)] +
+    [f"fg{i}_ses{session}_perc{percent}" for i in range(1, 5) for session in range(1, 4) for percent in (0, 50, 100)]
+)
+
 BNCI_DATASETS = [
-    # Format: (dataset_id, base_url_suffix, file_pattern, description)
-    ("001-2014", "001-2014", ["A01T", "A02T", "A03T", "A04T", "A05T", "A06T", "A07T", "A08T", "A09T"], "Four class motor imagery - 9 subjects"),
-    ("002-2014", "002-2014", ["S01T", "S02T", "S03T", "S04T", "S05T", "S06T", "S07T", "S08T", "S09T", "S10T", "S11T", "S12T", "S13T", "S14T"], "Two class motor imagery - 14 subjects"),
-    ("003-2014", "003-2014", ["S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08"], "Mental arithmetic (fNIRS) - 8 subjects"),
-    ("004-2014", "004-2014", ["B01T", "B02T", "B03T", "B04T", "B05T", "B06T", "B07T", "B08T", "B09T"], "Two class motor imagery - 9 subjects"),
-    ("005-2014", "005-2014", ["S01", "S02"], "Auditory oddball during hypnosis - 2 subjects"),
-    ("006-2014", "006-2014", ["S01", "S02"], "SCP training in stroke - 2 subjects"),
-    ("007-2014", "007-2014", ["S00", "S01", "S02", "S04", "S05", "S06", "S07", "S09", "S10"], "Two-finger gameplay - 10 subjects"),
-    ("008-2014", "008-2014", ["A01", "A02", "A03", "A04", "A05", "A06", "A07", "A08"], "P300 speller with ALS - 8 subjects"),
-    ("009-2014", "009-2014", ["A01S", "A02S", "A03S", "A04S", "A05S", "A06S", "A07S", "A08S", "A09S", "A10S"], "Covert and overt ERP-based BCI - 10 subjects"),
-    ("001-2015", "001-2015", ["S01A", "S02A", "S03A", "S04A", "S05A", "S06A", "S07A", "S08A", "S09A", "S10A", "S11A", "S12A"], "Autocalibration and recurrent adaptation - 12 subjects"),
+    # Format: (dataset_id, base_url_suffix, file_list, description)
+    ("001-2014", "001-2014", numbered("A", 1, 9, suffixes=("T", "E")), "Four class motor imagery - 9 subjects"),
+    ("002-2014", "002-2014", numbered("S", 1, 14, suffixes=("T", "E")), "Two class motor imagery - 14 subjects"),
+    ("003-2014", "003-2014", numbered("S", 1, 8), "Mental arithmetic (fNIRS) - 8 subjects"),
+    ("004-2014", "004-2014", numbered("B", 1, 9, suffixes=("T", "E")), "Two class motor imagery - 9 subjects"),
+    ("005-2014", "005-2014", numbered("S", 1, 2), "Auditory oddball during hypnosis - 2 subjects"),
+    ("006-2014", "006-2014", numbered("S", 1, 2), "SCP training in stroke - 2 subjects"),
+    ("007-2014", "007-2014", ["S00", "S01", "S02", "S04", "S05", "S06", "S07", "S09", "S10", "S11"], "Two-finger gameplay - 10 subjects"),
+    ("008-2014", "008-2014", numbered("A", 1, 8), "P300 speller with ALS - 8 subjects"),
+    ("009-2014", "009-2014", numbered("A", 1, 10, suffixes=("S", "G")), "Covert and overt ERP-based BCI - 10 subjects"),
+    ("001-2015", "001-2015", [f"S{i:02d}{suffix}" for i in range(1, 13) for suffix in ("A", "B", "C") if not (i < 8 and suffix == "C")], "Autocalibration and recurrent adaptation - 12 subjects"),
     ("002-2015", "002-2015", ["S01"], "Neuroprosthetic control - 1 subject"),
-    ("003-2015", "003-2015", ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10"], "Visual P300 speller - 10 subjects"),
-    ("004-2015", "004-2015", ["A", "C", "D", "E", "F", "G", "H", "J", "K"], "Individual imagery - 9 subjects"),
+    ("003-2015", "003-2015", [f"s{i}" for i in range(1, 11)], "Visual P300 speller - 10 subjects"),
+    ("004-2015", "004-2015", ["A", "C", "D", "E", "F", "G", "H", "J", "L"], "Individual imagery - 9 subjects"),
+    ("005-2015", "005-2015", prefixed_urls("https://doc.ml.tu-berlin.de/bbci/BNCIHorizon2020-Covert/covertShiftsOfAttention_", ["VPiac", "VPiae", "VPnh", "VPmk", "VPgao", "VPiah", "VPiaa", "VPiai"]), "Covert shifts of attention - 8 subjects"),
+    ("006-2015", "006-2015", ["VPaak", "VPaan", "VPgcc", "VPaap", "VPaaq", "VPjaq", "VPaar", "VPjat", "VPgeo", "VPaas", "VPaat", "music-samples"], "Music BCI - 11 subjects"),
+    ("007-2015", "007-2015", ["VPfat", "VPgdf", "VPgdg", "VPiac", "VPiba", "VPibe", "VPibq", "VPibs", "VPibt", "VPibu", "VPibv", "VPibw", "VPibx", "VPiby", "VPice", "VPicv"], "Motion VEP Speller - 16 subjects"),
+    ("008-2015", "008-2015", ["VPiac", "VPiba", "VPibb", "VPibc", "VPibd", "VPibe", "VPibf", "VPibg", "VPibh", "VPibi", "VPibj", "VPica", "VPsaf"], "Center Speller - 13 subjects"),
+    ("009-2015", "009-2015", ["VPfce", "VPkw", "VPfaz", "VPfcj", "VPfcg", "VPfar", "VPfaw", "VPfax", "VPfcc", "VPfcm", "VPfas", "VPfch", "VPfcd", "VPfca", "VPfcb", "VPfau", "VPfci", "VPfav", "VPfat", "VPfcl", "VPfck"], "AMUSE auditory speller - 21 subjects"),
+    ("010-2015", "010-2015", ["VPfat", "VPgcb", "VPgcc", "VPgcd", "VPgce", "VPgcf", "VPgcg", "VPgch", "VPiay", "VPicn", "VPicr", "VPpia"], "RSVP speller - 12 subjects"),
+    ("011-2015", "011-2015", ["1", "2"], "ECoG-based BCI based on cognitive control - 1 subject"),
+    ("012-2015", "012-2015", ["VPnv", "VPnw", "VPnx", "VPny", "VPnz", "VPmg", "VPoa", "VPob", "VPoc", "VPod", "VPja", "VPoe"], "PASS2D auditory ERP Speller - 12 subjects"),
+    ("013-2015", "013-2015", [f"S{i:02d}-{session}" for i in range(1, 7) for session in (1, 2)], "Monitoring error-related potentials - 6 subjects"),
+    ("001-2016", "001-2016", numbered("S", 1, 10), "ECoG-based 1-class motor imagery BCI - 10 subjects"),
+    ("002-2016", "002-2016", ["VPae", "VPbba", "VPgab", "VPgag", "VPgam", "VPja", "VPbad", "VPdx", "VPgac", "VPgah", "VPih", "VPsaj", "VPbax", "VPgaa", "VPgae", "VPgal", "VPii", "VPsal"], "Emergency braking during simulated driving - 18 subjects"),
+    ("001-2017", "001-2017", [f"S{i:02d}_{task}" for i in range(1, 16) for task in ("ME", "MI")], "Upper limb movement decoding from EEG - 15 subjects"),
+    ("001-2019", "001-2019", numbered("P", 1, 9) + ["P09 online session 1 train", "P09 online session 1 test", "P09 online session 2 train", "P09 online session 2 test", "P10"], "Attempted arm and hand movements in spinal cord injury - 10 subjects"),
+    ("001-2020", "001-2020", numbered("G", 1, 15) + numbered("V", 1, 15) + numbered("H", 1, 15), "Reach and grasp movement decoding from EEG - 15 subjects per recording"),
+    ("002-2020", "002-2020", numbered("P", 1, 18), "Spatial attention shifts to colored items - 18 subjects"),
+    ("001-2022", "001-2022", [f"P{i:02d}{condition}" for i in range(1, 14) for condition in ("b", "w")], "EEG correlates of difficulty level - 13 subjects"),
+    ("001-2024", "001-2024", numbered("S", 1, 20), "Handwritten character classification from EEG - 20 subjects"),
+    ("001-2025", "001-2025", [f"p{i:03d}" for i in range(1, 21)], "Discrete reaching speed, distance, and direction encoding - 20 subjects"),
+    ("002-2025", "002-2025", BNCI_002_2025_FILES, "Continuous 2D trajectory decoding from attempted movement - 20 participants"),
 ]
+BNCI_DATASET_COUNT = len(BNCI_DATASETS)
 
 def load_bnci_dataset(dataset_index):
     """
     Load a specific BNCI Horizon 2020 dataset.
     
     Args:
-        dataset_index: Index into BNCI_DATASETS (0-12 implemented, more can be added)
+        dataset_index: Index into BNCI_DATASETS.
     
     Returns:
         (x, y) or None if failed
     """
-    if dataset_index >= len(BNCI_DATASETS):
-        print(f"Dataset index {dataset_index} not yet implemented (total: {len(BNCI_DATASETS)})")
+    if dataset_index >= BNCI_DATASET_COUNT:
+        print(f"Dataset index {dataset_index} not configured (total configured: {BNCI_DATASET_COUNT})")
         return None
     
     dataset_id, url_suffix, file_list, description = BNCI_DATASETS[dataset_index]
     
     print(f"\n{'='*60}")
-    print(f"Loading BNCI Dataset {dataset_index + 1}/32")
+    print(f"Loading BNCI Dataset {dataset_index + 1}/{BNCI_DATASET_COUNT}")
     print(f"ID: {dataset_id}")
     print(f"Description: {description}")
     print(f"{'='*60}\n")
@@ -229,57 +261,81 @@ def load_bnci_dataset(dataset_index):
 
         return np.concatenate(x_chunks, axis=0), np.concatenate(y_chunks, axis=0)
 
+    def dataset_file_url(file_entry):
+        if file_entry.startswith(("http://", "https://")):
+            return file_entry
+
+        quoted_entry = urllib.parse.quote(file_entry)
+        if quoted_entry.lower().endswith((".mat", ".zip")):
+            return base_url + quoted_entry
+        return base_url + quoted_entry + ".mat"
+
+    def process_mat_file(mat_path):
+        data = loadmat(mat_path)
+        available_keys = [k for k in data.keys() if not k.startswith('__')]
+        print(f"  Keys in file: {available_keys}")
+
+        if 'data' not in data:
+            print(f"  No 'data' key found, skipping")
+            return
+
+        raw_data = data['data']
+        print(f"  'data' type: {type(raw_data).__name__}, shape: {raw_data.shape}, dtype: {raw_data.dtype}")
+
+        for cell_index, cell in enumerate(raw_data.flat):
+            trial_data = unpack_matlab_cell(cell)
+            if not isinstance(trial_data, np.ndarray):
+                continue
+
+            print(f"  Cell {cell_index + 1}/{raw_data.size}: shape={trial_data.shape}, dtype={trial_data.dtype}")
+
+            if trial_data.dtype.names:
+                x_raw, y_raw, trial_raw = select_struct_fields(trial_data)
+                print(f"  Unpacked X type: {type(x_raw)}, ", end="")
+                if isinstance(x_raw, np.ndarray):
+                    print(f"shape: {x_raw.shape}, dtype: {x_raw.dtype}")
+                else:
+                    print(f"length: {len(x_raw) if hasattr(x_raw, '__len__') else 'N/A'}")
+
+                print(f"  Unpacked y type: {type(y_raw)}, ", end="")
+                if isinstance(y_raw, np.ndarray):
+                    print(f"shape: {y_raw.shape}, dtype: {y_raw.dtype}")
+                else:
+                    print(f"value: {y_raw}")
+
+                prepared = epoch_continuous_signal(x_raw, y_raw, trial_raw)
+                if prepared is not None:
+                    x_prepared, y_prepared = prepared
+                    x_chunks.append(x_prepared)
+                    y_chunks.append(y_prepared)
+            else:
+                print(f"  Skipping unstructured cell: shape={trial_data.shape}")
+
     x_chunks = []
     y_chunks = []
 
     # Download and load every file configured for this dataset set.
     for filename in file_list:
         try:
-            dataset_url = base_url + filename + ".mat"
-            print(f"Attempting to download: {filename}.mat...")
+            dataset_url = dataset_file_url(filename)
+            display_name = os.path.basename(urllib.parse.urlparse(dataset_url).path) or filename
+            print(f"Attempting to download: {display_name}...")
             
             with tempfile.TemporaryDirectory() as tmpdir:
-                mat_path = os.path.join(tmpdir, f"{filename}.mat")
-                urllib.request.urlretrieve(dataset_url, mat_path)
-                
-                data = loadmat(mat_path)
-                available_keys = [k for k in data.keys() if not k.startswith('__')]
-                print(f"  Keys in file: {available_keys}")
-                
-                if 'data' in data:
-                    raw_data = data['data']
-                    print(f"  'data' type: {type(raw_data).__name__}, shape: {raw_data.shape}, dtype: {raw_data.dtype}")
+                download_path = os.path.join(tmpdir, display_name)
+                urllib.request.urlretrieve(dataset_url, download_path)
 
-                    for cell_index, cell in enumerate(raw_data.flat):
-                        trial_data = unpack_matlab_cell(cell)
-                        if not isinstance(trial_data, np.ndarray):
+                if download_path.lower().endswith(".zip"):
+                    with zipfile.ZipFile(download_path) as archive:
+                        mat_members = [m for m in archive.namelist() if m.lower().endswith(".mat")]
+                        if not mat_members:
+                            print("  Zip archive contains no .mat files, skipping")
                             continue
-
-                        print(f"  Cell {cell_index + 1}/{raw_data.size}: shape={trial_data.shape}, dtype={trial_data.dtype}")
-
-                        if trial_data.dtype.names:
-                            x_raw, y_raw, trial_raw = select_struct_fields(trial_data)
-                            print(f"  Unpacked X type: {type(x_raw)}, ", end="")
-                            if isinstance(x_raw, np.ndarray):
-                                print(f"shape: {x_raw.shape}, dtype: {x_raw.dtype}")
-                            else:
-                                print(f"length: {len(x_raw) if hasattr(x_raw, '__len__') else 'N/A'}")
-
-                            print(f"  Unpacked y type: {type(y_raw)}, ", end="")
-                            if isinstance(y_raw, np.ndarray):
-                                print(f"shape: {y_raw.shape}, dtype: {y_raw.dtype}")
-                            else:
-                                print(f"value: {y_raw}")
-
-                            prepared = epoch_continuous_signal(x_raw, y_raw, trial_raw)
-                            if prepared is not None:
-                                x_prepared, y_prepared = prepared
-                                x_chunks.append(x_prepared)
-                                y_chunks.append(y_prepared)
-                        else:
-                            print(f"  Skipping unstructured cell: shape={trial_data.shape}")
+                        archive.extractall(tmpdir, mat_members)
+                        for member in mat_members:
+                            process_mat_file(os.path.join(tmpdir, member))
                 else:
-                    print(f"  No 'data' key found, skipping")
+                    process_mat_file(download_path)
 
         
         except urllib.error.HTTPError as e:
@@ -330,7 +386,9 @@ def load_biosppy_eeg_data(data_file=None, dataset_index=0, require_bnci=False):
         return x, y
 
     if require_bnci:
-        raise FileNotFoundError(f"BNCI dataset {dataset_index + 1}/32 could not be loaded")
+        raise FileNotFoundError(
+            f"BNCI dataset {dataset_index + 1}/{BNCI_DATASET_COUNT} could not be loaded"
+        )
     
     # Try to load from local file first
     if data_file is not None and os.path.exists(data_file):
@@ -729,29 +787,44 @@ def evaluate(x_set, y_set, network, class_weights=None):
     
     return avg_loss, avg_acc
 
-def run_training_loop(num_runs=32, epochs_per_run=None, learning_rate=0.0001):
+def run_training_loop(num_runs=None, epochs_per_run=None, learning_rate=0.0001):
     """
     Run one deterministic sweep over BNCI dataset sets.
 
-    One run is one BNCI dataset set: 1/32 of the full configured dataset
-    structure. One epoch is one data item from that set's training split.
+    One run is one configured BNCI dataset set. One epoch is one data item
+    from that set's training split.
     By default, each set runs len(x_train) epochs so every training item in
     that set is used once.
     
     Args:
-        num_runs: Number of BNCI dataset sets to train on.
+        num_runs: Number of BNCI dataset sets to train on. If None, train on
+            every configured set. Values above the configured count are capped.
         epochs_per_run: Training items to consume per dataset set. If None,
             use every item in the set's training split once.
         learning_rate: Learning rate for training
     """
+    if num_runs is None:
+        num_runs = BNCI_DATASET_COUNT
+    elif num_runs > BNCI_DATASET_COUNT:
+        print(
+            f"Requested {num_runs} BNCI dataset sets, but only "
+            f"{BNCI_DATASET_COUNT} are configured; running {BNCI_DATASET_COUNT}."
+        )
+        num_runs = BNCI_DATASET_COUNT
+
     print(f"\n{'='*80}")
     print(f"Starting BNCI Dataset Training Loop")
     epoch_plan = "all training items in each set" if epochs_per_run is None else f"{epochs_per_run} items per set"
     print(f"Will run {num_runs} dataset sets, {epoch_plan}")
-    print(f"Each dataset set is 1/32 of the BNCI structure")
+    print(f"Configured BNCI dataset sets: {BNCI_DATASET_COUNT}")
     print(f"{'='*80}\n")
+
+    session_results = []
+    loop_start = time.time()
     
     for run in range(num_runs):
+        session_start = time.time()
+        dataset_id = BNCI_DATASETS[run][0]
         print(f"\n{'#'*60}")
         print(f"TRAINING SESSION {run + 1}/{num_runs}")
         print(f"{'#'*60}\n")
@@ -795,11 +868,17 @@ def run_training_loop(num_runs=32, epochs_per_run=None, learning_rate=0.0001):
             print(f"Network: {len(network)} layers")
 
             total_epochs = len(x_train) if epochs_per_run is None else epochs_per_run
+            if total_epochs < 1:
+                raise ValueError(f"epochs_per_run must be at least 1, got {total_epochs}")
             log_interval = max(1, min(1000, total_epochs))
             print(f"Epochs for this set: {total_epochs} (one training item per epoch)")
             
             total_loss = 0
             total_acc = 0
+            val_loss = None
+            val_acc = None
+            test_loss = None
+            test_acc = None
             
             for epoch in range(total_epochs):
                 epoch_start = time.time()
@@ -829,14 +908,65 @@ def run_training_loop(num_runs=32, epochs_per_run=None, learning_rate=0.0001):
             
             # Save weights after this session
             save_weights(network)
+            session_results.append({
+                "dataset_id": dataset_id,
+                "status": "success",
+                "train_samples": len(x_train),
+                "val_samples": len(x_val),
+                "test_samples": len(x_test),
+                "classes": n_classes,
+                "epochs": total_epochs,
+                "train_loss": train_loss,
+                "train_acc": train_acc,
+                "val_loss": val_loss,
+                "val_acc": val_acc,
+                "test_loss": test_loss,
+                "test_acc": test_acc,
+                "elapsed_seconds": time.time() - session_start,
+            })
             print(f"✓ Session {run + 1} complete - weights saved")
             
         except Exception as e:
             print(f"❌ Error in session {run + 1}: {e}")
+            session_results.append({
+                "dataset_id": dataset_id,
+                "status": "failed",
+                "error": str(e),
+                "elapsed_seconds": time.time() - session_start,
+            })
             continue
+
+    successful = [r for r in session_results if r["status"] == "success"]
+    failed = [r for r in session_results if r["status"] == "failed"]
+    attempted = len(session_results)
+    success_rate = (len(successful) / attempted * 100) if attempted else 0.0
+
+    def mean_metric(metric_name):
+        values = [r[metric_name] for r in successful if r.get(metric_name) is not None]
+        return float(np.mean(values)) if values else None
+
+    def format_metric(value):
+        return f"{value:.4f}" if value is not None else "n/a"
     
     print(f"\n{'='*80}")
     print(f"Training loop complete! Ran {num_runs} dataset sets")
+    print(f"Successful sets: {len(successful)}/{attempted} ({success_rate:.1f}%)")
+    print(f"Failed sets: {len(failed)}/{attempted}")
+    if successful:
+        print(
+            "Average final metrics over successful sets: "
+            f"train {format_metric(mean_metric('train_loss'))}/{format_metric(mean_metric('train_acc'))}, "
+            f"val {format_metric(mean_metric('val_loss'))}/{format_metric(mean_metric('val_acc'))}, "
+            f"test {format_metric(mean_metric('test_loss'))}/{format_metric(mean_metric('test_acc'))}"
+        )
+        print(f"Total train/val/test samples: "
+              f"{sum(r['train_samples'] for r in successful)}/"
+              f"{sum(r['val_samples'] for r in successful)}/"
+              f"{sum(r['test_samples'] for r in successful)}")
+    if failed:
+        failed_ids = ", ".join(r["dataset_id"] for r in failed)
+        print(f"Failed dataset IDs: {failed_ids}")
+    print(f"Elapsed time: {time.time() - loop_start:.1f}s")
     print(f"{'='*80}")
     
     # Cleanup temporary files
@@ -860,5 +990,5 @@ def cleanup_files():
     print("✓ Cleanup complete")
 
 if __name__ == "__main__":
-    # Run one training epoch per data item in each of the 32 BNCI dataset sets.
-    run_training_loop(num_runs=32, epochs_per_run=None, learning_rate=0.0001)
+    # Run one training epoch per data item in each configured BNCI dataset set.
+    run_training_loop(epochs_per_run=None, learning_rate=0.0001)
